@@ -23,3 +23,9 @@ mc-src/artifacts/libs/
 *.log
 # 沙箱 HOME 只读:gradle user home 落工作区(foojay JDK/依赖缓存)
 .gradle-user-home/
+
+# 参考仓库(Caustica 等,嵌套 git 仓库不入根仓库)
+/refs/
+
+# 原版 MC 直接启动的运行目录(config/logs)
+mc-src/.vanilla-run/
