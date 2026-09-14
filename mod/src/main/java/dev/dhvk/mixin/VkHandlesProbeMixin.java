@@ -27,6 +27,8 @@ public abstract class VkHandlesProbeMixin {
     @Shadow
     private VulkanQueue graphicsQueue;
 
+    // ErrorProne 不识别 @Inject 的字节码调用点: 方法"未被源码调用"、CallbackInfo 参数"未读取"均为 mixin 惯用法假报。
+    @SuppressWarnings({"UnusedMethod", "UnusedVariable"})
     @Inject(method = "<init>", at = @At("RETURN"))
     private void dhvkCaptureVkHandles(CallbackInfo ci) {
         VkHandles.capture(this.vkDevice.address(), this.graphicsQueue.vkQueue().address(), 0L);
