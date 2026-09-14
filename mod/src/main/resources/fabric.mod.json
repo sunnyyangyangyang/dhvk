@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "dhvk",
+  "version": "0.1.0",
+  "name": "dhvk",
+  "description": "Distant-Horizons-style vk rendering mod skeleton (MC 26.2)",
+  "authors": ["dh-vk2026"],
+  "contact": {},
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.dhvk.DhVkClient"]
+  },
+  "mixins": [
+    { "config": "dhvk.mixins.json", "environment": "client" }
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}

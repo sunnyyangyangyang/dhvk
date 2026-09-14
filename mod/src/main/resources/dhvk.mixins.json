@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.dhvk.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [],
+  "client": [
+    "VkHandlesProbeMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

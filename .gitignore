@@ -6,6 +6,7 @@ out/
 
 # 原始二进制 jar(可经脚本重下,sha1 钉死在 scripts/ 里)
 mc-src/artifacts/*.jar
+mc-src/artifacts/libs/
 
 # 本地 maven 发布缓存(工作区侧)
 .local-maven/
