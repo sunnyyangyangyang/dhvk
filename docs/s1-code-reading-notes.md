@@ -764,3 +764,287 @@ ensureHeapSurgery 同窗预编译 4 条管线。
   reserved 区 → 若 ② 亮而 ① 黑, 坐实"表=reserved 区"的驱动语义; 两者皆黑 →
   fetch 死路, 转 vkCmdPushDataEXT 自序列化或 VVL 新档/全档, 交用户裁决。
   哨兵机制继续休眠; 手写 [addr,size] 路径自此降级为"对照组化石"。
+
+### run32 设计修订（外部参谋对质 → 头号嫌疑换人：官方 push 的"互相作废"时序）
+
+- 对质对象: 外部 AI 参谋对 VK_EXT_descriptor_heap 的解读。采纳: ① 经典
+  push/bind 与堆绑定**双向立即作废**对方状态(规范原文); ② 带 Layout 创建的
+  管线其静态映射信息被驱动无视(与我们 null-layout 手术互证); ③ 三张王牌
+  框架。不采纳: "时序截杀(堆绑最后)已经天然满足"——**我们没有做到**。
+- **run26 CBU 级审计 = 被忽视的铁证**: 每 draw 实际顺序
+  `vkCmdBindPipeline → 经典顶点/索引绑定 → 我方 vkCmdBindResourceHeapEXT →
+  官方 per-draw pushDescriptors(realLayout) → vkCmdDrawIndexed`。
+  堆绑定**在官方 push 之前** → 按双向作废规则, draw 时刻堆状态已死 →
+  null-layout 堆管线的 6 路 UBO 全读零描述符 → 全黑。
+- **单一理论全解释**: run26 红块(顶点/索引走经典绑定不受 push 作废影响) /
+  run27 没东西 / run28-31 全黑 / run31 驱动方言字节写入表却"从未被取"
+  (表只是写目标) / VVL 1.4.341 零报错(旧层不跟踪该作废) / 对齐阵亡后的
+  无头案(表字节从来正确, 错在"取的时刻堆状态已不在")。
+- 烟枪归类(参谋三分类): 史上唯一非黑 = run26 红块 = 可能性①(纯顶点色,
+  UBO 未参战) → UBO 通路**从未被验证通电**, 不存在隐藏的历史胜利;
+  但黑 ≠ "表 fetch 坏", 黑也可能是"堆状态被作废"。
+- **run32 本体 = 王牌二(可执行形态)**: mixin 在当前管线 ∈ DHVK 堆管线集
+  (4 条)时掐死官方 pushDescriptors(ci.cancel) —— 堆绑最后成立, 无内鬼。
+  同炉保留探针三通道 + 驱动字节表: 品红 = 一刀定谳; 仍黑 → run33 偏移
+  扫描(自原 run32 方案降级顺延)。王牌三(BDA buffer_reference + 地址推
+  push constant)入终极弹匣。
+- 备注: 本地 /tmp 规格缓存(dh-spec.txt)随 tmpfs 清空; 双向作废原文待明日
+  对原文复核(实验设计不依赖该句, GPU 终审)。
+
+### run32 规格原文再验证 (2026-09-15 晨)
+
+昨夜 /tmp/dh-spec.txt 随 session tmp 重置丢失; 今晨经 registry.khronos.org 重新定位 2026 代规格:
+旧路径 `specs/2.x/extensions/EXT/descriptor_heap.html` 已 404, 整本规格合并为单文件
+`https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html` (Vulkan 1.4.362, ~16MB 纯文本)。
+剥标签全文检索 "invalidates", 相互失效规则原文逐字确认(双向):
+
+> "When any heap state command is recorded to a command buffer, it immediately invalidates all
+> descriptor set and descriptor buffer state set by vkCmdBindDescriptorSets2,
+> **vkCmdPushDescriptorSet2**, vkCmdPushDescriptorSetWithTemplate2, ... Similarly, recording any
+> of these commands **immediately invalidates all state set by commands in this chapter**."
+
+> "When vkCmdBindResourceHeapEXT is recorded, it immediately invalidates all non-heap descriptor
+> state. Similarly, recording any non-heap descriptor state commands immediately invalidates
+> state set by this command."
+
+即: 官方 per-draw 的 vkCmdPushDescriptorSetKHR(run26 CBU 审计: 落在我们的
+vkCmdBindResourceHeapEXT 之后、vkCmdDrawIndexed 之前) 按规格立即作废刚绑定的堆状态 →
+绘制时刻静态映射 UBO 读全部落在零描述符 → run27-31 全黑。Ace 2(run32) = 名册管线 HEAD 取消
+官方 push, 正在炉中裁决。
+
+### run32 实施完毕 + 2026-09-15 晨黑屏事件(待重启后点炉)
+
+**代码(run32 Ace2, 已落盘, :mod:build --offline 绿灯)**:
+- 新 mixin `mod/src/main/java/dev/dhvk/mixin/VulkanRenderPassPushCancelMixin.java`:
+  @Mixin(VulkanRenderPass.class), @Shadow protected VulkanRenderPipeline pipeline,
+  @Inject(method="pushDescriptors()V", at=@At("HEAD")) →
+  if (DhVkClient.surgeryApplied && DhVkClient.isDhvkPipeline(this.pipeline)) ci.cancel();
+  六条 draw 路全部汇进这个私有方法(官方后端唯一经典描述符命令 = VulkanRenderPass:390
+  KHRPushDescriptor.vkCmdPushDescriptorSetKHR, 全库 grep BindDescriptorSets 零命中)。
+- DhVkClient 新增: DHVK_PIPELINES(IdentityHashMap 身份集合) + registerDhvkPipeline /
+  isDhvkPipeline / dhvkPipelineCount。
+- FarTerrainRenderer: DHVK_PIPELINES 数组常量(四条管线), ensureHeapSurgery 的
+  precompile try/finally 之后循环 precompilePipeline(rp) instanceof VulkanRenderPipeline
+  → register(共享 pipelineCache.computeIfAbsent 按 RenderPipeline 身份 → 实例同一性成立),
+  并 log "run32 push-cancel roster armed: N heap pipelines"; dispose() 清册。
+- dhvk.mixins.json client 数组追加 "VulkanRenderPassPushCancelMixin"。
+- 规格原文再验证(晨): 2026 代规格合并单文件 https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html
+  (Vulkan 1.4.362); 双向互斥失效逐字确认(见上节)。
+
+**今晨黑屏事件(全部与代码无关, 五炉含 vanilla 全黑)**:
+- 主机 2026-09-15 10:04 重启(GDM + GNOME Wayland, nvidia 615.71.09 主显, Xwayland 24.1.13,
+  kernel 7.2.5-200.fc44)。r32a/r32b(带 mod, X11): 黑菜单(世界未加载, VVL 零, 键/声活, 用户手动停);
+  r32c(DHVK_NOSURGERY=1, 注意要先 gradlew --stop 换 daemon 才生效): 亦黑;
+  r32d(GLFW_PLATFORM=wayland): 该 env 这颗 GLFW 3.5.0 原生库不认(strings 无此串), 仍走 XCB, 黑;
+  r32e(vanilla client.jar 直火, 无 mod, X11): 黑 → 代码嫌疑清零。
+- 铁证: `DISPLAY=:0 xdriinfo` → "Screen 0: not direct rendering capable" —— 今晨 Xwayland
+  DRI 通路没接上(同副二进制昨晚正常 = 开机时序病)。XCB 像素递不到 Mutter → X11 窗全黑,
+  原生 Wayland 窗(浏览器)无恙。
+- GLFW 痴心 X11: 摘 DISPLAY / 显式给 WAYLAND_DISPLAY=wayland-0 都照崩
+  "X11: The DISPLAY environment variable is missing", 无 wayland fallback(用户终端实测两次)。
+- GPU "一大坨"(用户言: 老毛病勿管): MC Vulkan 每炉退场后驱动留 ~31GB 显存账 + 功率余温,
+  compute-apps 空 = 无进程持有。
+- 待办: 用户 `sudo reboot` → 重启 dsh → 说"跑" → 我点炉:
+  `cd /home/sunny/Documents/dh-vk2026 && GRADLE_USER_HOME=$PWD/.gradle-user-home   JAVA_HOME=$PWD/.gradle-user-home/jdks/eclipse_adoptium-25-amd64-linux.2   VK_LAYER_PATH=$PWD/mc-src/.vanilla-run/vulkan-layers ./gradlew :mod:runClient   --args="--graphicsBackend vulkan --vulkanValidation" 2>&1 | tee /tmp/s1-t2-r32.log`(后台)。
+  早期体检: 日志应有 "run32 push-cancel roster armed: 4 heap pipelines" + run31 device facts
+  (descriptorSize=8B) + 表 6 槽 + VVL 零。用户进游戏后 Esc→视频设置→渲染距离 32 再看 -X 方向。
+- 判读: 品红(探针 R≈1,G≈0.4-0.75,B≈1) = push 互斥失效定谳 → 满配 VVL
+  (VK_LAYER_SETTINGS_PATH=$PWD/mc-src/scripts/vkl-fullprofile) + docs/baselines 基线 diff +
+  任务2提交(含 5090 七怪+今晨桥断事件注记); 仍黑 → run33 = 偏移扫描
+  (6 条 mapping heapOffset → 0 表头 vs → reserved 区 262144 驱动字节; 皆黑 = fetch 死 →
+  vkCmdPushDataEXT/新 VVL 用户仲裁)。若重启后照旧黑: 第二方案 = Xephyr 临时桥或挖
+  /var/log/gdm 下 Xwayland 日志(DRI 模块加载失败指纹)。
+- vanilla 直火命令(备查): `cd /home/sunny/Documents/dh-vk2026 && CP="mc-src/artifacts/client.jar:$(paste -sd: mc-src/artifacts/classpath.txt)" && [env 修饰] .gradle-user-home/jdks/eclipse_adoptium-25-amd64-linux.2/bin/java -cp "$CP" net.minecraft.client.main.Main --gameDir $PWD/mc-src/.vanilla-run --accessToken 0 --version 26.2 --offlineDeveloperMode --username Sunny --graphicsBackend vulkan --vulkanValidation`
+  (classpath.txt = 131 行绝对路径 libs, client.jar 自垫头; 26.2 Main 必选参数 = accessToken + version)。
+
+### run33: X11 像素桥断链裁决 → 快照回滚 (2026-09-15 午后)
+
+- 现象: 14:16:55 重启后 run-mod-vk 点火(s0-run-142203.log): 设备手术/句柄捕获/主菜单
+  声音+点击/VVL 零警告全绿, 但画面全黑; vanilla 与 glxgears 亦黑 → mod 嫌疑清零,
+  定位 = X11→Mutter 像素桥(XWayland DRI/GBM present)。
+- 指纹矛盾: `xdriinfo` 仍 "Screen 0: not direct rendering capable"(DRI3 屏未注册),
+  但 `glxinfo` GLX direct=Yes(NVIDIA 5090 4.6.0) = X 服务器 nvidia GLX provider 活着、
+  客户端直渲正常, 死在服务器侧 screen 向 Mutter 的 present 通路。
+- 开机史铁证(journalctl --list-boots):
+  - boot-4 = 09-14 14:36 → 09-15 03:40(run20-31 马拉松整晚, 画面全程正常);
+  - boot-3 = 09-15 10:04 起 → 10:04 / 10:53 / 14:14 / 14:16:55 连续四次开机全黑。
+  - boot-4→boot-3 边界**零包变更**(下一次 dnf 是 09-15 14:15 nvidia 栈 -1→-3, 之后仍黑)
+    → 非 egl 774 更新新病(boot-4 的 XWayland 启动时已载新 egl 库且整晚健康),
+    是跨该重启后 X 服务器 DRI 初始化不再恢复的开机时序/状态病。
+- 排除项: SELinux=Disabled 且零 AVC 拒绝; GPU "一大坨"(31GB 显存账)用户裁决=老毛病勿动
+  (nvidia-smi -r 因主 GPU 被拒, 本就清不掉); XWayland 日志被 gnome-shell 标识顶名,
+  系统/用户 journal 均捞不到其 (II)/(EE) 行(GNOME 降了 verbose), 指纹只能靠 xdriinfo。
+- 用户裁决: grub-btrfs 快照回滚, 选 **09-14 14:36 ~ 09-15 03:40 窗口**(boot-4 时代,
+  推荐最靠近 09-14 21:00~23:59 已验证游戏内像素的时点); /boot 照旧(内核 7.2.5-200
+  + kmod-nvidia -3), 只回 / 用户态。
+- 重启后流程: 重启 dsh → 说"跑" → 体检 `DISPLAY=:0 xdriinfo`(须 "direct rendering
+  capable") + `DISPLAY=:0 glxgears` 十秒探针 → 桥通即点炉 `bash mc-src/scripts/run-mod-vk.sh`
+  (脚本自启 serve-mappings)。早期体检: "run32 push-cancel roster armed: 4 heap pipelines"
+  + VVL 零 + 进世界渲染距离 32 看 -X 方向品红探针。
+- 若快照启动仍黑: 嫌疑升格到内核/nvidia 模块级(同内核换回老用户态仍黑 = 桥在驱动侧),
+  下一步 = 用 /boot 活状态直接开 7.2.4-200 老内核(kmod-615.71.09-1 在位)对照,
+  并设法拿 XWayland DRI 初始化错误行(降 -log-verbose 重开会话或 GDM 侧日志)。
+- 证据: s0-run-142203.log(今日 14:22 炉, mod 侧全绿+全黑的完整一手日志)。
+### run33 续: 快照 A/B 闭环 + Xid 31 铁证 → 下一步=硬断电 (2026-09-15 14:45)
+
+- 快照回滚实为 boot: root=...subvol=root/.snapshots/1624/snapshot + 内核 7.2.4-200
+  (快照条目绑定 7.2.4 时代) + xorg-x11-drv-nvidia 615.71.09-1 (rpm 时间戳 9/13 03:03,
+  快照确实生效)。xdriinfo 依旧 "not direct rendering capable"。
+- 对照修正: 昨晚画面正常的 boot-4 跑的是 **7.2.5-200** (journalctl -b 35a68cbd 核实)。
+  A/B 矩阵: 7.2.5×新驱动-3=黑(今晨四连) / 7.2.4×快照用户态-1=黑(本炉) /
+  7.2.5×老驱动-1×长开不重启=好 → 软件层(内核+用户态)全排除。
+- 本炉 GPU 硬证据:
+  1) 全新开机即 memory.used=31128/32607 MiB + utilization=100% + pmon 无进程
+     (一大坨跨软重启存活);
+  2) 第一炉 GL 回退运行时 NVRM Xid 31 刷屏: "MMU Fault: ENGINE GRAPHICS ...
+     faulted @ 0x0_00000000 / 0x0_00001000, FAULT_PDE ACCESS_TYPE_VIRT_READ"
+     = GPU 页目录项损坏, 图形引擎在近乎空指针地址读显存。
+  → 头号嫌疑升格 = GPU 自身持久态(一大坨)在软重启间存活, 每次开机 X 服务器 DRI
+    初始化撞墙。
+- 本炉两炉记录: ① Vulkan+VVL: 快照根无 VVL(今晨 00:05 才装, 快照在前) →
+  VK_ERROR_LAYER_NOT_PRESENT → 自动回退 OpenGL → 之后 SIGABRT(exit 134, 无 hs_err);
+  ② Vulkan 关 VVL: 全绿, 探针全点火, 主菜单就位后干净退出(s0-run-novvl-*.log)。
+  用户目视裁决: 三窗(MC×2 + glxgears)全黑。
+- 下一步(用户执行): **真断电**——拔电源/PSU 开关拨 O, 等 10-30s, 再通电开机
+  (内核无所谓, 7.2.5 或快照皆可) → 登录 → 重启 dsh → 说"跑" → 栞体检
+  (xdriinfo 须 "direct rendering capable" + nvidia-smi 一大坨应消失/骤降 + glxgears)
+  → 绿灯点炉 run-mod-vk.sh 进世界看品红探针。
+- 若硬断电后仍黑: 嫌疑升到 GPU 硬件级——先 Xorg-on-VT 旁路(Ctrl+Alt+F2 登录
+  startx 跑 :1, 绕开 Wayland 桥)验证 X 服务器直驱能否出像素; 再查 GPU 供电/
+  重插卡/换槽/BIOS 重置; 终极 = 另一台机器对照 5090。
+### run33 续2: EGL 精确回滚裁决 (2026-09-15 14:5x)
+
+- 用户在活根(live /root, 7.2.5-200)上 14:53:17 dnf 精确降级四库:
+  egl-gbm→1.1.3-2 / egl-wayland→1.1.21-2 / egl-wayland2→1.0.1-1 / egl-x11→1.0.5-1
+  (nvidia 驱动保持 -3, 软重启, GPU 一大坨仍在: 31707MiB+100% 空转)。
+- 软重启后 xdriinfo 依旧 "not direct rendering capable"。
+- s0-run-145755.log: Vulkan+VVL 全绿(探针全点火), 主菜单 62s 后用户退出。
+- 待用户目视裁决: 本炉窗口有像素=egl 即元凶(与 boot-4 长开推论矛盾, 说明 EGL
+  dispatch 懒加载/首帧才触发); 全黑=egl 出局, 嫌疑收敛到 GPU 一大坨 → 硬断电。
+### run33 结案 (17:2x)
+- 用户长期静置+全新冷启动后自测: glxgears/vkcube 均出像素 → X11 桥通。
+- s0-run-172900.log: Vulkan+VVL 全绿, 主菜单像素在(用户 12s 手动退出)。launch 测试=通过。
+- 黑屏病因归档: 与"开机后立即/连续重启"相关的 XWayland DRI 断链; 长期静置+冷启动自愈;
+  GPU 一大坨为常量(好炉也有)非元凶; egl 回滚/快照/老内核均无效(已排除)。
+- 余步: 游戏内品红探针定谳(run32) → 渲染距离32, -X 方向远景墙色。
+### run33 终局修订 (17:3x, 用户判定)
+- 真凶 = dsh bwrap 沙箱: --dev /dev 全新 devtmpfs 只 bind 了 /dev/nvidia*, 无 /dev/dri →
+  X 走抽象 socket(几何/事件/声音活), DRI3/GBM 像素共享缺 /dev/dri/cardN → 全黑窗。
+  用户宿主终端自测 glxgears/vkcube 均正常 → 宿主桥从未断; 冷启动/egl/内核/快照皆冤。
+- 待办: 用户宿主终端跑 run-mod-vk.sh 出菜单像素 = launch 定谳; 游戏内品红探针 = run32 结案。
+- 可选修复: ~/.dsh/bin/dsh-bwrap-session-tmp.sh 增加 --dev-bind /dev/dri 段, 沙箱内即可见像素。
+### run33 修复落地 + 验证 (17:4x)
+- 修复: ~/.dsh/bin/dsh-bwrap-session-tmp.sh L240 默认 DSH_GPU_DEVICE_GLOB
+  "/dev/nvidia*" → "/dev/nvidia* /dev/dri/*" (operator 文件, 热生效无需重启 dsh;
+  dsh-npm-update.sh 不碰该 wrapper, 升级安全)。
+- 验证: 沙箱内 /dev/dri 可见(card1 amdgpu + card2 nvidia); 沙箱内 glxgears +
+  vkcube 用户目视=出像素("成了, 完美看到")。
+- 全黑案判决: 宿主无恙; 全部黑窗=dsh bwrap 沙箱缺 /dev/dri 的 DRI3/GBM 交换断链。
+- 余步: 沙箱内重跑 run-mod-vk 确认菜单像素 → 进世界 RD32 -X 品红探针定谳 run32。
+- 可选: AGENTS.md dsh-bwrap 段落补一行 GPU 直通现含 /dev/dri (用户点头再写)。
+### run32a→run32b: push 取消器崩溃与重写 (17:42→17:5x)
+- run32a 实机(17:42:17, s0-run-174206.log): 进世界首帧 FarTerrainRenderer.drawIndexed →
+  pushDescriptors 的 @Inject(HEAD) ci.cancel() 抛
+  CancellationException: "The call pushDescriptors is not cancellable" → Render Frame 崩溃
+  (exit 255). 反混淆产物的方法变换不认 HEAD 级方法取消。桥/沙箱侧已全绿(用户目视窗口正常)。
+- run32b: 混子重写 = @Redirect pushDescriptors 体内 390 行唯一 KHR push 调用
+  (KHRPushDescriptor.vkCmdPushDescriptorSetKHR (JIIJI)J) → 堆名册管线吞掉返回 VK_SUCCESS,
+  验证块/anyDescriptorDirty 复位照常。语义与 run32a 等价。
+- 待裁决: 重进世界 → RD32 -X 远景墙: 品红=push 互斥定谳结案; 仍黑=转 run33 偏移扫描。
+### run32b 实机首帧证据 (17:48, s0-run-174749.log + 用户截图)
+- 游戏内世界渲染全色正常(天空/沙/水/云), 左右两块 run26 探针均 = 纯红(非黑) →
+  push Redirect 刀口生效, 经典 push 吞掉后堆通道独占描述符, 首帧 in-world 不再崩。
+- run32a 崩溃(CancellationException not cancellable) 已由 run32b 的 @Redirect 解决。
+- 最终品红定谳(RD32 -X 远景墙)仍待用户择时; .dsh 仓库已提交 ㉒/㉓/㉔。
+
+### run32 裁决落地 + run33 设计 (2026-09-15 夜, 重启后 X11 桥已修复)
+
+**run32 结果(18:2x, 重启后首炉, VVL 零, 干净退出)**:
+- 屏幕修复: 世界正常出图。日志齐全: roster armed: 4 heap pipelines ✓, device facts 64B/8B ✓, 6 静态映射 + null layout + flags2 ✓。RD16(用户需 Esc→视频设置→32 才能做绿线检查)。
+- **君截图 = 两面红板 (R≈1, G=0, B=0)**: R = length(DT ModelView 行0) ≈ 1 → **DT 槽堆读活着, GPU 真的从堆表读到本帧相机矩阵**。
+- **push 互斥失效定谳**: run27-31 六连黑的根因 = 官方 per-draw pushDescriptors 落在我们 heap bind 之后作废堆状态; Ace2 mixin(名册管线 HEAD 取消官方 push)一刀劈开。
+- 表字节(18:20:31, 全槽到位): VBO=[0x400000002d605c,0x40]API / IBO=[0x100000002d605e,0x40]API / Proj=[0x9c815c0,0x40]hostA / DT=[0x7cc70c0,0xc0]hostA(活) / Fog=[0x180000001f1024,0x40]API(帧内偏移128) / Glob=[0x20000000272056,0x40]API。
+- **新头号嫌疑(run33 待裁): 5090 对堆内偏移=0 的 UBO 描述符按空槽处理**。死槽(VBO/IBO/Proj/Globals)在各自 buffer 内偏移全为 0; 唯一活槽 DT 偏移 768。API 方言字节[VBA>>6|tag]的嫌疑被降为次要(其死可被偏移0完全解释)。
+
+**run33 设计(单一变量: 全槽改 host-A 裸 [addr,size], 剔除 API 方言混淆)**:
+- 改动: FarTerrainRenderer.dhvkBindHeap 的 writeUniformSlot 六槽 viaApi 参数全部 false(原 VBO/IBO/Fog/Glob 四槽 true)。名册/探针/表日志不动。
+- 判读表(竖屏窗口 aspect<1, G=clamp(length(Proj行0)*0.5) 会顶到 1):
+  | 板色 | 读法 | 下一步 |
+  | 近白 (1,~1,~1) | 六槽全活 | 绿线: 君 Esc→视频→渲染距离 32 看 -X: 墙A四色+地形深度遮挡+墙B 100%雾 → 满配 VVL + docs/baselines 基线 diff + 任务2提交 |
+  | 紫 (1,0,1) | VBO/IBO 活、偏移0槽死 | 偏移0定谳 → run34 = guard-offset 重建(墙 VBO/IBO buffer 前留 64B 护栏, 数据从偏移 64 起, 经典 bind 用 offset 64, 描述符指 base+64; Proj = 私有 128B buffer 每帧 CPU 拷官方投影数据到偏移 64, 描述符指 base+64) |
+  | 仍红 (1,0,0) | 另有隐情 | 哨兵 buffer 当金丝雀扩探针(64B 分片非零偏移), 逐槽定位 |
+- 5090 怪癖清单候补第 8 条: 堆 UBO 描述符 buffer 内偏移 0 → 读零(待 run33/34 定谳)。
+- 环境备忘: 今晨黑屏 = 10:04 重启后 Xwayland DRI 死(xdriinfo: "Screen 0: not direct rendering capable"), 用户重启修复; GLFW 3.5.0(LWJGL 3.4.1 原生)痴心 X11 不 fallback Wayland 也不认 GLFW_PLATFORM env。
+
+
+> 勘误(2026-09-15 夜): 上节"run32 实施完毕"所述 mixin 初版 @Inject(HEAD)+ci.cancel()
+> 在 17:42:17 首帧 in-world 崩于 `CancellationException: The call pushDescriptors is not
+> cancellable`(反混淆产物的方法变换不认账 HEAD 取消) → 已改为 @Redirect 重定向
+> pushDescriptors 体内 390 行唯一的 KHRPushDescriptor.vkCmdPushDescriptorSetKHR 便利重载
+> ((VkCommandBuffer,int,long,int,VkWriteDescriptorSet$Buffer) 签名): 名册管线 → 静默 return,
+> 否则原样转发。验证块/anyDescriptorDirty 复位照常执行。run32(18:2x 红板)即此版。
+
+
+### run33/34 裁决 + run35 设计(先登记后手写)
+- run33(六槽全裸字节): 全黑 —— 且 DT 槽有一帧在 ringA 偏移 384(非零)也死 → "偏移0约定"单线理论破产。
+  run32(混合: VBO/IBO/Fog/Glob=API方言, DT/Proj=裸) DT 槽(官方 ring B+768)独活 → 红板。
+- run34(哨兵横扫: 六槽全指自建哨兵 buffer 六分片, 探针 6 通道 /6 编码, 官方 Fog/Globals 匿名块 import 修
+  "Unable to find shader defined uniform (FOG)" 管线编译崩): 两板近黑, 用户目击**一板闪红一下**(过渡帧)。
+  → 结论: 堆取数只认"驱动认识的" buffer 地址。run32 红 = DT 槽指官方 ring(每帧被官方 classic push
+  喂描述符 → 驱动 BDA 表认识); run34 黑 = 哨兵 buffer 从未经任何描述符 API → 生手地址全零。
+- **run35(已点火 /tmp/s1-t2-r35.log)**: ① 哨兵 buffer 创建后经 vkWriteResourceDescriptorsEXT 一次性
+  登记进 scratch 槽(4,0)(384B 全量, 静态映射不引用 → 不被取数); ② 每帧分裂写法:
+  槽 0-2(板A: VBO/IBO/Proj)= 手写裸[addr,size](已登记地址); 槽 3-5(板B: DT/Fog/Glob)= 驱动 API 方言字节。
+  判读: 板A亮(1/6,2/6,3/6 蓝灰阶梯)= 裸字节+登记 可用(机制=先登记后手写, 最简); 板B亮(4/6,5/6,1 亮蓝)
+  = API 方言字节可用; 双亮 = 两路皆活; 全黑 = 登记副作用非根因 → run36 = 保留区表基址嫌疑
+  (映射 heapOffset+表写整体 +262144 搬进 reservedRange 再裁)。
+
+
+### run35 裁决(2026-09-15 夜, 机制大突破)
+- run35 分裂炉: 槽 0-2(板A)=手写裸[addr,size](哨兵已先经 API 登记进 scratch 槽(4,0));
+  槽 3-5(板B)=驱动 API 方言字节。用户截图: **板A 全黑(2,3,2), 板B 亮蓝 (162,202,243)
+  ≈ (4/6,5/6,6/6)** —— 像素实测证实。
+- **定谳**: ① 驱动 API 方言字节 = 唯一可解码格式(板B 三通道全活: DT/Fog/Glob 哨兵值 4,5,6 全读出);
+  ② 手写裸字节不可解码, 即便 buffer 先经 vkWriteResourceDescriptorsEXT 登记(run34 黑屏根因收束:
+  生手地址零 + 位模式不对, 双因); ③ run32 红板(DT 裸字节独活) = 官方当帧 KHR push 恰把同地址
+  描述符物化进命令流的一次性巧合, 不可复现。
+- **任务 2 写路收口: 表槽每帧 6× vkWriteResourceDescriptorsEXT(host 侧, 无 CBU 成本), 裸字节退役。**
+- API 方言字节实测(run35): [low32=BDA>>6][high32=bufferTag(哨兵=0x60)][0x40, 0x?]
+  (DT/Fog/Glob 的 tag 同为 0x60 → tag = 每 buffer 内部 ID; size 位恒 0x40)。
+- **run36(已点火 /tmp/s1-t2-r36.log)**: 六槽全 API 方言(哨兵横扫不变) → 唯一待裁 = 偏移 0
+  (哨兵分片 0 = 板A R 通道)在 API 路下生死。判读: 板A R 亮(1/6 暗红)=偏移 0 活 → 全机制收口,
+  run37 直接真实数据(六槽官方 ring/墙缓冲 slice 全 API 写) + RD32 绿线; 板A R 黑 = 偏移 0 死 →
+  墙 VBO/IBO 护栏偏移(数据挪 buffer 内偏移 64)+ 官方 Proj 数据每帧拷入私有 buffer 偏移 64。
+
+
+
+### run36 裁决(2026-09-15 夜, 机制全收口)
+- run36(六槽全 API 方言, 哨兵横扫不变): 用户截图"都不是黑色的": 板A 深蓝(1/6,2/6,3/6) +
+  板B 亮蓝(4/6,5/6,1) → **六通道全活**, 哨兵分片 0(偏移 0, VBO 槽)在 API 路下也活 → 末一疑点归零。
+- **5090 描述符堆机制三钉子全齐**:
+  ① 表槽字节 = 只认 vkWriteResourceDescriptorsEXT 序列化的驱动方言字节; 手写裸 [addr,size]
+    永不可解码(buffer 即便先经 API 登记也死 —— run35 板A 黑为证);
+  ② 我们 4 条堆管线上官方每帧 vkCmdPushDescriptorSetKHR 必须取消(spec: 堆状态 vs 经典描述符
+    状态互斥失效, 双向; run32 红板 = 首个实证; mixin @Redirect, 初版 @Inject HEAD-cancel 崩
+    "The call pushDescriptors is not cancellable");
+  ③ 缓冲内偏移 0 在 API 路下无碍。
+- 方言字节破译(run36/37 实测): 16B 槽 = [high32=bufferTag<<24 | low32=BDA>>6][0x40 恒定]。
+  实测 tag: VBO=0x40, IBO=0x10, Proj=0x20, DT=0x60, Fog=0x18, Glob=0x20(Proj/Glob 恰同);
+  descriptorSize(UBO)=8B, 槽距 16B。
+- run37 设计: 六槽每帧写真实数据(全 API 路) —— 槽 0/1 = 墙 VBO/IBO BDA(偏移 0), 槽 2-5 =
+  官方 ring 本帧 slice(UNIFORM_SLICES 捕获: Proj off0 / DT 192B 环旋转 / Fog / Globals);
+  哨兵登记保留为创建期占位。
+
+### run37 裁决(真实数据端到端)
+- 日志对账: 表槽回读字节逐帧解码 == 期望 BDA, 六槽全中(DT/Fog 随 ring 逐帧旋转
+  DT 0x7c40000→0x7cc6dc0→0x7cc76c0…, VBO/IBO/Proj/Glob 恒定); roster armed 4 管线;
+  设备事实 64B/16B/8B 正常。
+- 用户截图: 板A 绯红(VBO 头 −400 → R 饱和; IBO 头索引 0 → G=0; Proj 淡蓝) / 板B 纯蓝
+  (|CameraBlockPos.x|≥6 → B 饱和; DT/Fog 微光) —— 与 run36 哨兵灰阶不同色 = **GPU 正经
+  堆描述符读到官方 ring 的活数据**。VVL 零报错(0 validation messages)。
+- 余程: 绿线目视裁决(RD32: 墙 A(x=−400) 四色 + 地形遮挡; 墙 B(x=−2000) 100% 雾白) →
+  VVL 全 profile(vkl-fullprofile) + 基线 diff(docs/baselines) → 任务 2 收口提交。
+- X11 环境注: 冷启后 Xwayland DRI 会死(xdriinfo "not direct rendering capable")→ 连续黑屏,
+  sudo reboot 治愈; GLFW 3.5.0 只走 X11(无 Wayland 回退、无 GLFW_PLATFORM env)→ 每次点火
+  前确保显示会话健康。
+

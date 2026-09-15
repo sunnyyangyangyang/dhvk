@@ -1,7 +1,11 @@
 package dev.dhvk;
 
+import com.mojang.blaze3d.vulkan.VulkanRenderPipeline;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 import net.fabricmc.api.ClientModInitializer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VK11;
@@ -53,6 +57,29 @@ public final class DhVkClient implements ClientModInitializer {
     /** run22: 捕获窗内的 uniform 名 → 本帧 GpuBufferSlice 记录(render 线程独占, 每帧窗口清空)。
      *  全量静态映射下, 官方 uniform 绑定的堆描述符每帧从此处取 slice 重写(笔记 run22 设计定稿)。 */
     public static final Map<String, com.mojang.blaze3d.buffers.GpuBufferSlice> UNIFORM_SLICES = new HashMap<>();
+
+    /** run32 Ace2: DHVK 堆管线名册(身份集合). 名册管线 draw 触发官方
+     *  {@code VulkanRenderPass.pushDescriptors} 时, mixin 在 HEAD 整段取消经典 push ——
+     *  descriptor-heap 相互失效规则: 官方经典 push 落在我们堆绑定之后会作废堆状态
+     *  → 绘制时刻静态映射 UBO 读全部落在零描述符上(run27-31 全黑根因嫌疑,
+     *  见笔记 run32 设计修订). render 线程注册、同线程读取, 无跨线程问题. */
+    public static final Set<VulkanRenderPipeline> DHVK_PIPELINES = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /** run32 Ace2: 把手术编译出的堆管线登记进 push 取消名册(precipile/getOrCompilePipeline
+     *  缓存同源 → 编译实例唯一; 同一管线对象重复传入幂等无害). */
+    public static void registerDhvkPipeline(VulkanRenderPipeline pipeline) {
+        DHVK_PIPELINES.add(pipeline);
+    }
+
+    /** run32 Ace2: 给定编译管线是否为 DHVK 堆管线之一(VulkanRenderPassPushCancelMixin 判据). */
+    public static boolean isDhvkPipeline(VulkanRenderPipeline pipeline) {
+        return pipeline != null && DHVK_PIPELINES.contains(pipeline);
+    }
+
+    /** run32 Ace2: 名册规模(供日志). */
+    public static int dhvkPipelineCount() {
+        return DHVK_PIPELINES.size();
+    }
 
     private static volatile boolean gateRun = false;
 

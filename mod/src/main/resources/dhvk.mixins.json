@@ -14,7 +14,8 @@
     "RenderPassUniformProbeMixin",
     "LevelRendererFarPassMixin",
     "ClientPackSourceDevResourcesMixin",
-    "RenderSystemShutdownMixin"
+    "RenderSystemShutdownMixin",
+    "VulkanRenderPassPushCancelMixin"
   ],
   "injectors": {
     "defaultRequire": 1

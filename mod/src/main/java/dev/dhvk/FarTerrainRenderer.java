@@ -186,6 +186,11 @@ public final class FarTerrainRenderer {
         .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
         .build();
 
+    /** run32 Ace2: DHVK 四条堆管线名册(ensureHeapSurgery 登记进 push 取消名册,
+     *  见 VulkanRenderPassPushCancelMixin). */
+    private static final RenderPipeline[] DHVK_PIPELINES = {PIPELINE, PIPELINE_PROBE, PIPELINE_PROBE2_REPLACE,
+        PIPELINE_PROBE2_BLEND};
+
     /** S1 任务 2: 几何描述符承载堆(持久,init 建一次;墙 A/B 的 VBO/IBO 地址注册在 cell 0)。 */
     private static final long CELL_CAPACITY = 8192L;
 
@@ -292,6 +297,7 @@ public final class FarTerrainRenderer {
         // VVL 的 pNext walker 仍可能摸链)
         DhVkClient.mappingInfoNode = 0L;
         DhVkClient.pipelineSurgeryArmed = false;
+        DhVkClient.DHVK_PIPELINES.clear();
         frameCounter = 0;
     }
 
@@ -394,13 +400,19 @@ public final class FarTerrainRenderer {
         if (cbu == 0L) {
             return;
         }
-        // run31 双路分槽对照: DT/Proj 走 A(host 手写 [addr,size] 对照组),
-        // VBO/IBO/Fog/Globals 走 B(驱动 vkWriteResourceDescriptorsEXT 不透明字节实验组)。
-        // 探针 R=DT、G=Proj、B=VBO/IBO → 一次 run 裁决两条写路各自的硬件可读性。
+        // run34 哨兵横扫: 六槽全指哨兵 buffer 六分片(offset 64*i, 头 float = i+1;
+        // 矩阵分片近单位阵 / 雾分片 end=大值, 主墙变换保持正常), 全 host-A 裸 [addr,size]
+        // (尺寸沿用官方记录宽度, VVL range 规则干净); 探针六通道各读一片头 /6 →
+        // 一次 run 画完表槽活死地图; 若全黑, 次炉 34b 把映射+表写整体搬入保留区再裁。
+        if (sentinelBase == 0L) {
+            return;
+        }
+        // run37 真实数据收口: 六槽每帧 = 官方 ring 本帧 slice / 墙 VBO/IBO, 全 API 方言
+        // (run35-36 定谳: 驱动序列化字节 = 5090 堆槽唯一可解码格式; 偏移 0 亦活)。
         writeUniformSlot(0, "VBO", true);
         writeUniformSlot(1, "IBO", true);
-        long[] proj = writeUniformSlot(2, "Projection", false);
-        long[] dt = writeUniformSlot(3, "DynamicTransforms", false);
+        long[] proj = writeUniformSlot(2, "Projection", true);
+        long[] dt = writeUniformSlot(3, "DynamicTransforms", true);
         long[] fog = writeUniformSlot(4, "Fog", true);
         long[] glob = writeUniformSlot(5, "Globals", true);
         if (frameCounter <= TABLE_CHECK_FRAMES) {
@@ -470,12 +482,13 @@ public final class FarTerrainRenderer {
             LOGGER.warn("[dhvk] run24 table check: heap not host-visible, readback skipped");
             return;
         }
-        LOGGER.info("[dhvk] run24 table check frame={} (slotStride={}B, run31: VBO/IBO/Fog/Glob=API, "
-                + "DT/Proj=host-A):", frameCounter, heap.slotStrideBytes());
+        LOGGER.info("[dhvk] run24 table check frame={} (slotStride={}B, run37 真实数据: 六槽 = 官方 ring "
+                + "本帧 slice / 墙 VBO/IBO, 全 API 方言指纹(免严格比对)):",
+                frameCounter, heap.slotStrideBytes());
         checkSlot(0, 0, "VBO", vboDeviceAddress, vertexBuffer.size(), base, true);
         checkSlot(0, 1, "IBO", iboDeviceAddress, indexBuffer.size(), base, true);
-        checkSlot(1, 0, "Projection", proj == null ? -1L : proj[0], proj == null ? -1L : proj[1], base, false);
-        checkSlot(1, 1, "DynamicTransforms", dt == null ? -1L : dt[0], dt == null ? -1L : dt[1], base, false);
+        checkSlot(1, 0, "Projection", proj == null ? -1L : proj[0], proj == null ? -1L : proj[1], base, true);
+        checkSlot(1, 1, "DynamicTransforms", dt == null ? -1L : dt[0], dt == null ? -1L : dt[1], base, true);
         checkSlot(2, 0, "Fog", fog == null ? -1L : fog[0], fog == null ? -1L : fog[1], base, true);
         checkSlot(2, 1, "Globals", glob == null ? -1L : glob[0], glob == null ? -1L : glob[1], base, true);
         for (String n : new String[] {"Projection", "DynamicTransforms", "Fog", "Globals"}) {
@@ -580,6 +593,19 @@ public final class FarTerrainRenderer {
         } finally {
             DhVkClient.pipelineSurgeryArmed = false;
         }
+        // run32 Ace2: 四条堆管线登记进官方 push 取消名册 —— precompile/getOrCompilePipeline
+        // 共享 pipelineCache(computeIfAbsent, 按 RenderPipeline 身份缓存) → 名册实例即官方
+        // setPipeline 将取回的 record, 身份比对成立; 此后名册管线的 draw 触发官方
+        // pushDescriptors 时被 HEAD 取消(VulkanRenderPassPushCancelMixin), 堆状态不再
+        // 被经典 push 互斥失效(run27-31 全黑的头号嫌疑, 见笔记 run32 设计修订)
+        for (RenderPipeline rp : DHVK_PIPELINES) {
+            if (RenderSystem.getDevice().precompilePipeline(rp) instanceof VulkanRenderPipeline vrp) {
+                DhVkClient.registerDhvkPipeline(vrp);
+            }
+        }
+        LOGGER.info("[dhvk] run32 push-cancel roster armed: {} heap pipelines "
+                + "(classic pushDescriptors HEAD-cancelled on their draws)",
+                DhVkClient.dhvkPipelineCount());
         // 按名扫描(缓存命中, 不重编译): 静态映射声明的 firstBinding 序必须与合并 layout 实测一致
         java.util.Map<String, Integer> scanned = scanLayoutBindingNames();
         // run23: 全表 log —— run22 的 Globals=null 之谜 → 直接把 layout 全部条目倒出来, 不再靠推断
@@ -731,8 +757,26 @@ public final class FarTerrainRenderer {
         // 哨兵先于任何管线编译落表; 之后每帧 dhvkBindHeap 将六槽重写为真实描述符。
         ByteBuffer sentinel = ByteBuffer.allocateDirect(6 * 16 * 4).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < 6; i++) {
-            for (int j = 0; j < 16; j++) {
-                sentinel.putFloat(j == 0 ? (float) (i + 1) : 0.0F);
+            float head = (float) (i + 1);
+            int from;
+            if (i == 2 || i == 3) {
+                // run34: 近单位阵(row0.x = head)—— 主墙在哨兵矩阵下变换仍正常
+                sentinel.putFloat(head).putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
+                sentinel.putFloat(0.0F).putFloat(1.0F).putFloat(0.0F).putFloat(0.0F);
+                sentinel.putFloat(0.0F).putFloat(0.0F).putFloat(1.0F).putFloat(0.0F);
+                sentinel.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F).putFloat(1.0F);
+                from = 16;
+            } else if (i == 4) {
+                // run34: fogStart = head, fogEnd 大值 —— 主墙不被哨兵雾染白
+                sentinel.putFloat(head);
+                sentinel.putFloat(65536.0F);
+                from = 2;
+            } else {
+                sentinel.putFloat(head);
+                from = 1;
+            }
+            for (int j = from; j < 16; j++) {
+                sentinel.putFloat(0.0F);
             }
         }
         sentinel.rewind();
@@ -742,6 +786,12 @@ public final class FarTerrainRenderer {
         for (int i = 0; i < 6; i++) {
             heap.writeBufferDescriptor(i / 2, i % 2, sentinelBase + (long) i * 64, 64L);
         }
+        // run35 先登记后手写: 哨兵 buffer 一次性经 vkWriteResourceDescriptorsEXT 登记进
+        // 驱动内部 BDA 表(scratch 槽 (4,0), 静态映射不引用 → 永不被取数), 之后表槽里的
+        // 手写裸字节才有'认识的地址'可解码(run34 全黑头号嫌疑 = 未登记地址按零解码)。
+        heap.writeBufferDescriptor(4, 0, sentinelBase, 384L, true);
+        LOGGER.info("[dhvk] run35 sentinel registered via API: 0x{} (384B) -> scratch slot(4,0)",
+                Long.toHexString(sentinelBase));
         LOGGER.info("[dhvk] run29 sentinel armed: all 6 table slots = sentinel descriptors "
                 + "(row0.x = slot+1, sentinel@0x{}), creation-time table fully non-zero; "
                 + "per-frame rewrite to real descriptors happens in dhvkBindHeap", sentinelBase);
