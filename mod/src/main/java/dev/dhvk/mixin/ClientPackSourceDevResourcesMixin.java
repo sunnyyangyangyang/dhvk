@@ -19,19 +19,29 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * 首帧懒编译管线无效 → "Pipeline is not valid (may contain invalid shaders?)"。
  *
  * <p>于 ClientPackSource 构造器 HEAD(super() 之前,即 createVanillaPackSource
- * 读取 developmentConfig 之前)接管钩子:把 classpath 上所有 file: scheme 的
- * assets/ 目录(mod 资源目录)推进 vanilla pack。release 环境 mod 资源在 jar 内
- * (jar: scheme),该钩子自然不添加任何根,无副作用。
+ * 读取 developmentConfig 之前)接管钩子,两件事缺一不可:
+ * <ol>
+ *   <li>{@code pushClasspathResources} 把 classpath 上 file: scheme 的 assets/
+ *       目录(mod 资源目录)推进 vanilla pack 的文件系统根;</li>
+ *   <li>{@code exposeNamespace("dhvk")} —— 26.2 的 MultiPackResourceManager 按
+ *       pack.getNamespaces() 的并集预建"命名空间 → 管理器"表,而 vanilla pack 的
+ *       该集合由 builder 的 exposeNamespace 定死(原版只报 minecraft/realms),
+ *       不暴露 dhvk 则 listResources 根本不会枚举我们的命名空间。</li>
+ * </ol>
+ * release 环境 mod 资源在 jar 内(jar: scheme),pushClasspathResources 不添加
+ * 任何根;exposeNamespace 只扩大命名空间声明,对无资源的命名空间是空操作。
  */
 @Mixin(ClientPackSource.class)
 public abstract class ClientPackSourceDevResourcesMixin {
 
+    // 构造器 @At("HEAD") 位于 super() 之前 —— mixin 规定此类 handler 必须 static(此时 this 尚不存在)。
     @SuppressWarnings({"UnusedMethod", "UnusedVariable"})
     @Inject(method = "<init>", at = @At("HEAD"))
-    private void dhvkExposeClasspathAssetRoots(final CallbackInfo ci) {
-        VanillaPackResourcesBuilder.developmentConfig =
-                builder -> builder.pushClasspathResources(PackType.CLIENT_RESOURCES,
-                        VanillaPackResourcesBuilder.class);
+    private static void dhvkExposeClasspathAssetRoots(final CallbackInfo ci) {
+        VanillaPackResourcesBuilder.developmentConfig = builder -> {
+            builder.pushClasspathResources(PackType.CLIENT_RESOURCES, VanillaPackResourcesBuilder.class);
+            builder.exposeNamespace("dhvk");
+        };
         DhVkClient.logDevHookInstalled();
     }
 }
