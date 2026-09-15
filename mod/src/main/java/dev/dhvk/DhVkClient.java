@@ -1,5 +1,7 @@
 package dev.dhvk;
 
+import java.util.HashMap;
+import java.util.Map;
 import net.fabricmc.api.ClientModInitializer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VK11;
@@ -33,6 +35,24 @@ public final class DhVkClient implements ClientModInitializer {
      *  物理设备能力, 不查设备启用状态(run10 实证: 无手术时物理设备仍报 descriptorHeap=1,
      *  旧门槛逻辑误判 PASSED)。由手术 handler 在扩展+feature 真正入链时置位。 */
     public static volatile boolean surgeryApplied = false;
+
+    /** run20 管线手术上膛窗: 仅在 FarTerrainRenderer.ensureHeapSurgery 强制首编 PIPELINE 期间为 true
+     *  (render 线程内 set/clear, 无竞态; 与 surgeryApplied 同模式)。VulkanRenderPipelineSurgeryMixin
+     *  的 @Redirect handler 读它决定是否把 descriptor-heap 创建位/静态映射链注入官方 compile()。 */
+    public static volatile boolean pipelineSurgeryArmed = false;
+
+    /** run20: VkShaderDescriptorSetAndBindingMappingInfoEXT 节点指针(native heap 永生, 0 = 尚未建)。
+     *  由 ensureHeapSurgery 建好并置位; 管线销毁晚于我们的 dispose, 节点不回收。 */
+    public static volatile long mappingInfoNode = 0L;
+
+    /** run22 uniform 捕获窗: 仅在自有远地形 pass 的 setUniform 段落期间为 true(render 线程
+     *  set/clear, 与 pipelineSurgeryArmed 同模式)。RenderPassUniformProbeMixin 的 @Inject
+     *  handler 读它决定是否把 (uniform 名 → 本帧 slice) 记入 uniformSlices。 */
+    public static volatile boolean uniformCaptureArmed = false;
+
+    /** run22: 捕获窗内的 uniform 名 → 本帧 GpuBufferSlice 记录(render 线程独占, 每帧窗口清空)。
+     *  全量静态映射下, 官方 uniform 绑定的堆描述符每帧从此处取 slice 重写(笔记 run22 设计定稿)。 */
+    public static final Map<String, com.mojang.blaze3d.buffers.GpuBufferSlice> UNIFORM_SLICES = new HashMap<>();
 
     private static volatile boolean gateRun = false;
 

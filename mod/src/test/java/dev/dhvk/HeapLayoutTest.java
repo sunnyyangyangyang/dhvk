@@ -23,4 +23,12 @@ class HeapLayoutTest {
         long total = HeapLayout.totalBytes(8192, 2, 64);
         assertEquals(8192 * 2 * 64, total); // 无预留区时的精确值(S1: reservedRange=0, 见笔记 §6)
     }
+
+    @Test
+    void slotStrideNeverBelowDescriptorSize() {
+        assertEquals(16, HeapLayout.slotStride(8, 16)); // 5090 实测: align=8 descSize=16 → 16B 槽
+        assertEquals(64, HeapLayout.slotStride(64, 16)); // 对齐更大时从对齐
+        assertEquals(8, HeapLayout.slotStride(8, 8));
+        assertEquals(32, HeapLayout.slotStride(16, 24)); // 取整到对齐边界
+    }
 }

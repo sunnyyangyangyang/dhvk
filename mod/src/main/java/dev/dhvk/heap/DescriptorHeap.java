@@ -12,9 +12,6 @@ import org.lwjgl.vulkan.VkBindHeapInfoEXT;
 import org.lwjgl.vulkan.VkBufferCreateInfo;
 import org.lwjgl.vulkan.VkBufferDeviceAddressInfo;
 import org.lwjgl.vulkan.VkCommandBuffer;
-import org.lwjgl.vulkan.VkDescriptorMappingSourceConstantOffsetEXT;
-import org.lwjgl.vulkan.VkDescriptorMappingSourceDataEXT;
-import org.lwjgl.vulkan.VkDescriptorSetAndBindingMappingEXT;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkDeviceAddressRangeEXT;
 import org.lwjgl.vulkan.VkHostAddressRangeEXT;
@@ -34,8 +31,9 @@ import org.slf4j.LoggerFactory;
 /**
  * S1 descriptor heap 本体: 一段 GPU 内存 = 全体 cell 的描述符表(堆不是对象, 是内存范围)。
  *
- * <p>持久堆(init 建一次, 不重建不搬家) + 每帧整表绑定(vkCmdBindResourceHeapEXT, 命令级
- * mapping 链把 1 代 UNIFORM_BUFFER 绑定重定向到堆源) + dirty 描述符重写。
+ * <p>持久堆(init 建一次, 不重建不搬家) + 每帧整表绑定(vkCmdBindResourceHeapEXT;
+ * 2026 规约: 绑定→堆源映射在管线创建期静态声明——见 FarTerrainRenderer.ensureHeapSurgery,
+ * 每帧 bind 只带堆范围 + 驱动预留区, VkBindHeapInfoEXT.pNext 必须 NULL) + dirty 描述符重写。
  *
  * <p>内存类型与写入路径按笔记 §3/§8(5090 优先 DEVICE_LOCAL|HOST_VISIBLE ReBAR 窗口):
  * <ul>
@@ -53,7 +51,6 @@ public final class DescriptorHeap implements AutoCloseable {
     // 1.4.357 头文件 sType 字面量(LWJGL 3.4.1 STYPE 静态字段半初始化, 用字面量 —— 任务 1 同课)
     static final int STYPE_BIND_HEAP_INFO = 1000135003;
     static final int STYPE_RESOURCE_DESCRIPTOR_INFO = 1000135002;
-    static final int STYPE_SET_BINDING_MAPPING = 1000135005;
     static final int STYPE_HEAP_PROPS = 1000135008;
 
     // 内存属性位 = 2026 新值空间 javap 实锤: DEVICE_LOCAL=1, HOST_VISIBLE=2, HOST_COHERENT=4.
@@ -66,19 +63,14 @@ public final class DescriptorHeap implements AutoCloseable {
     /** 1 代 buffer 描述符类型 = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER。 */
     static final int DESC_TYPE_UNIFORM_BUFFER = 6;
 
-    /**
-     * 一个堆源映射: 哪个 set 的哪个绑定从堆取。S1 全部 = push set(0) 单绑定
-     * + UNIFORM_BUFFER 资源掩码 + 堆内恒定偏移(HEAP_WITH_CONSTANT_OFFSET_EXT)。
-     *
-     * @param firstBinding 合并 set layout 里的绑定索引
-     * @param heapOffset 表内**绝对**槽位偏移(bind 时按 rangeOffset 换算为相对值)
-     */
-    public record Mapping(int firstBinding, long heapOffset) {
-    }
-
     private final long sizeBytes;
+    private final long tableBytes;
+    private final long reservedOffset;
+    private final long reservedSize;
     private final long cellCapacity;
     private final long slotAlignment;
+    /** run24: 槽宽 = max(对齐, 描述符实际宽度) 再按对齐取整(5090: max(8,16)=16B)。 */
+    private final long slotStride;
     private final long descSize;
     private final boolean coherent;
     private final boolean writePathA;
@@ -115,19 +107,34 @@ public final class DescriptorHeap implements AutoCloseable {
             long maxResourceHeapSize = hp.maxResourceHeapSize();
             long resourceHeapAlignment = hp.resourceHeapAlignment();
             // 2) 预算(R4: 超 maxResourceHeapSize → 降 cell 容量并 log)
+            // run20: 堆分配必须包含驱动预留区(VkBindHeapInfoEXT.reservedRangeSize 下限
+            // minResourceHeapReservedRange, run19 实证 VUID-pBindInfo-11233 报 96768B) →
+            // 表区(描述符槽位) + 预留区, 合计按 4096 对齐(4096 = 驱动实测 resourceHeapAlignment)
+            // run24 表宽修正: 槽宽必须 ≥ 描述符实际宽度(descSize), 否则相邻 16B 描述符挤进
+            // 8B 槽位互相覆盖(run22/23 双墙全灭的头号嫌疑, 见笔记 run24 设计定稿)
+            long slotStride = HeapLayout.slotStride(bufDescAlignment, this.descSize);
             long cells = cellCapacity;
-            long size = HeapLayout.totalBytes(cells, slotsPerCell, bufDescAlignment);
-            if (size > maxResourceHeapSize) {
-                cells = Math.max(1L, maxResourceHeapSize / ((long) slotsPerCell * bufDescAlignment));
-                size = HeapLayout.totalBytes(cells, slotsPerCell, bufDescAlignment);
-                LOGGER.warn("[dhvk] descriptor heap budget downgraded: {} -> {} cells (maxResourceHeapSize={}B)",
-                        cellCapacity, cells, maxResourceHeapSize);
+            long reserved = hp.minResourceHeapReservedRange();
+            long tableBytes = HeapLayout.totalBytes(cells, slotsPerCell, slotStride);
+            if (tableBytes + reserved > maxResourceHeapSize) {
+                cells = Math.max(1L, (maxResourceHeapSize - reserved) / ((long) slotsPerCell * slotStride));
+                tableBytes = HeapLayout.totalBytes(cells, slotsPerCell, slotStride);
+                LOGGER.warn("[dhvk] descriptor heap budget downgraded: {} -> {} cells (maxResourceHeapSize={}B, "
+                        + "reserved={}B)", cellCapacity, cells, maxResourceHeapSize, reserved);
             }
-            if (resourceHeapAlignment > 1L) {
+            long size = tableBytes + reserved;
+            size = (size + 4095L) / 4096L * 4096L;
+            if (resourceHeapAlignment > 4096L) {
                 size = (size + resourceHeapAlignment - 1L) / resourceHeapAlignment * resourceHeapAlignment;
             }
             this.cellCapacity = cells;
+            this.slotStride = slotStride;
             this.sizeBytes = size;
+            // 预留区紧贴表区之后: 2026 的 reservedRangeOffset 相对 heapRange 起点, 我们恒绑整表
+            // (rangeOffset=0) → 相对偏移 = 表基址
+            this.tableBytes = tableBytes;
+            this.reservedOffset = tableBytes;
+            this.reservedSize = reserved;
             this.slotAlignment = bufDescAlignment;
             // 3) 内存类型一次性 dump + 选择(§3: DEVICE_LOCAL|HOST_VISIBLE 优先, HOST_COHERENT 更优)
             int typeIndex;
@@ -147,15 +154,15 @@ public final class DescriptorHeap implements AutoCloseable {
                         Integer.toHexString(flags),
                         mp.memoryTypes().get(i).heapIndex());
             }
-            // 4) 堆 buffer(raw vkCreateBuffer, usage = 堆位 + 传输位)
+            // 4) 堆 buffer(raw vkCreateBuffer, usage = 堆位 + 传输位 + SDA 位)
             boolean noFlags = "1".equals(System.getenv("DHVK_NOFLAGS"));
-            boolean heapSda = "1".equals(System.getenv("DHVK_HEAPSDA"));
             long[] buf = new long[1];
+            // run19b 实证: NVIDIA 驱动对缺 SHADER_DEVICE_ADDRESS usage 位的堆 buffer 返回设备地址 0
+            // (baseDev=0x0 → VUID-VkDeviceAddressRangeEXT-size-11411 连锁) → 该位从诊断开关
+            // (DHVK_HEAPSDA)转正为无条件
             int heapUsage = EXTDescriptorHeap.VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT
-                    | VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-            if (heapSda) {
-                heapUsage |= VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-            }
+                    | VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                    | VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
             int rc = VK10.vkCreateBuffer(VkHandles.deviceWrapper,
                     VkBufferCreateInfo.calloc(stack).sType$Default()
                             .size(size)
@@ -184,7 +191,7 @@ public final class DescriptorHeap implements AutoCloseable {
             // (DHVK_NOFLAGS=1 摘链)实证 NULL 链头被优雅处理(bind 仅报 VUID-11408 消息, 无崩溃).
             // 修复: 节点常驻 native heap(nmemCalloc 零初始化+16B 对齐, 2026 LWJGL 小写 nmem* API),
             // close() 时才释放.
-            // 遗留二分开关: DHVK_NOFLAGS=1 摘链(诊断); DHVK_HEAPSDA=1 堆叠加 SHADER_DEVICE_ADDRESS(诊断)
+            // 遗留二分开关: DHVK_NOFLAGS=1 摘链(诊断); DHVK_SKIPHEAPADDR=1 跳过堆设备地址查询(诊断)
             VkMemoryAllocateInfo allocInfo = VkMemoryAllocateInfo.calloc(stack).sType$Default()
                     .allocationSize(req.size())
                     .memoryTypeIndex(typeIndex);
@@ -231,10 +238,12 @@ public final class DescriptorHeap implements AutoCloseable {
         if (!this.writePathA && !this.hostVisible) {
             allocateHostScratch();
         }
-        LOGGER.info("[dhvk] descriptor heap ready: {}B ({} cells x {} slots), bufDescAlign={}B descSize={}B, "
-                + "memType[{}]={} coherent={}, writePath={}, baseDev=0x{}, baseHost=0x{}",
-                sizeBytes, cellCapacity, 2, slotAlignment, descSize, chosenTypeIndex, typeFlagsName(chosenTypeFlags),
-                coherent,
+        LOGGER.info("[dhvk] descriptor heap ready: {}B (table {}B + reserved {}B, {} cells x {} slots), "
+                + "bufDescAlign={}B descSize={}B slotStride={}B(run24), memType[{}]={} coherent={}, "
+                + "writePath={}, baseDev=0x{}, baseHost=0x{}",
+                sizeBytes, tableBytes, reservedSize, cellCapacity, 2, slotAlignment, descSize, slotStride,
+                chosenTypeIndex,
+                typeFlagsName(chosenTypeFlags), coherent,
                 writePathA ? "A(host-direct)" : "B(vkWriteResourceDescriptorsEXT)",
                 Long.toHexString(baseDeviceAddr), Long.toHexString(baseHostAddr));
     }
@@ -313,9 +322,9 @@ public final class DescriptorHeap implements AutoCloseable {
                 + Integer.toHexString(bits) + ")");
     }
 
-    /** cell 的第 slot 个槽位在堆内的字节偏移。 */
+    /** cell 的第 slot 个槽位在堆内的字节偏移(槽宽 = run24 修正后的 slotStride)。 */
     public long slotOffsetOf(long cell, int slot) {
-        return HeapLayout.slotOffset(cell, slot, slotAlignment);
+        return HeapLayout.slotOffset(cell, slot, slotStride);
     }
 
     /** 堆总大小(字节)。 */
@@ -323,22 +332,42 @@ public final class DescriptorHeap implements AutoCloseable {
         return sizeBytes;
     }
 
+    /** 表区主机映射基址(非 host-visible 时 0)—— run24 读回验证用。 */
+    public long hostAddress() {
+        return baseHostAddr;
+    }
+
+    /** 槽宽(run24: ≥ 描述符实际宽度)。 */
+    public long slotStrideBytes() {
+        return slotStride;
+    }
+
     /** 设备侧表基址 + 偏移。 */
     public long deviceAddressAt(long offset) {
         return baseDeviceAddr + offset;
     }
 
-    /** 写一个 buffer 描述符(payload = arena 子区的设备地址区间)到 cell 的槽位。 */
+    /** 写一个 buffer 描述符(payload = arena 子区的设备地址区间)到 cell 的槽位。
+     *  路径按构造期内存类型裁决: writePathA → host 直写, 否则驱动序列化。 */
     public void writeBufferDescriptor(long cell, int slot, long deviceAddress, long rangeSize) {
+        writeBufferDescriptor(cell, slot, deviceAddress, rangeSize, !writePathA);
+    }
+
+    /** run31: per-slot 路径覆写 —— viaApi=true 强制走 B(驱动 vkWriteResourceDescriptorsEXT
+     *  把实现方言的不透明描述符字节写进表槽), false 强制走 A(host 手写 [addr,size])。
+     *  5090 全槽读零疑点 = 手写字节不是驱动认识的不透明位模式; 双路分槽对照,
+     *  探针 R=DT/A、G=Proj/A、B=VBO/IBO/B 一次 run 区分两条路径的硬件健康度。 */
+    public void writeBufferDescriptor(long cell, int slot, long deviceAddress, long rangeSize, boolean viaApi) {
         if (closed) {
             throw new IllegalStateException("[dhvk] descriptor heap already closed");
         }
-        long off = HeapLayout.slotOffset(cell, slot, slotAlignment);
-        if (off + descSize > sizeBytes) {
+        long off = HeapLayout.slotOffset(cell, slot, slotStride);
+        if (off + descSize > tableBytes) {
+            // 槽位必须落在表区内, 不许侵入驱动预留区
             throw new IllegalStateException("[dhvk] descriptor slot out of table: cell=" + cell + " slot=" + slot);
         }
-        if (writePathA) {
-            // A: host 直写 —— 仅当 descSize==16(auto 裁决保证)时 payload 编码 = 裸地址区间
+        if (!viaApi) {
+            // A: host 直写 —— payload 编码 = 裸地址区间(run31 对照组)
             long host = baseHostAddr + off;
             MemoryUtil.memPutLong(host, deviceAddress);
             MemoryUtil.memPutLong(host + 8, rangeSize);
@@ -372,14 +401,15 @@ public final class DescriptorHeap implements AutoCloseable {
     }
 
     /**
-     * 每帧一次: 在给定 CBU 上绑堆范围 + 命令级 mapping 链(1 代 set layout 类型不变, 笔记 §1/§8)。
+     * 每帧一次: 在给定 CBU 上绑整表(2026 规约: 绑定→堆源的 mapping 在管线创建期静态声明——
+     * 见 FarTerrainRenderer.ensureHeapSurgery; 每帧 bind 只带堆范围 + 驱动预留区,
+     * VkBindHeapInfoEXT.pNext 必须 NULL, run19b VUID-VkBindHeapInfoEXT-pNext-pNext 的根治)。
      *
      * @param commandBufferAddr 笔记 §2 钉死的发射点(encoder 当前 CBU, setPipeline 后 drawIndexed 前)
      * @param rangeOffset 堆内范围起点(表内绝对偏移)
      * @param rangeSize 范围大小
-     * @param mappings 绑定→堆源重定向(每 binding 一个, heapOffset = 表内绝对槽位偏移)
      */
-    public void bind(long commandBufferAddr, long rangeOffset, long rangeSize, Mapping... mappings) {
+    public void bind(long commandBufferAddr, long rangeOffset, long rangeSize) {
         if (closed) {
             return;
         }
@@ -388,35 +418,15 @@ public final class DescriptorHeap implements AutoCloseable {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            // mapping 链: 逆序挂 pNext, mappings[0] 成为链头
-            long chain = 0L;
-            for (int i = mappings.length - 1; i >= 0; i--) {
-                Mapping m = mappings[i];
-                long ho = m.heapOffset() - rangeOffset;
-                VkDescriptorMappingSourceConstantOffsetEXT co = VkDescriptorMappingSourceConstantOffsetEXT.calloc(stack)
-                        .heapOffset((int) ho)
-                        .heapArrayStride(0);
-                VkDescriptorMappingSourceDataEXT sd = VkDescriptorMappingSourceDataEXT.calloc(stack).constantOffset(co);
-                VkDescriptorSetAndBindingMappingEXT mp = VkDescriptorSetAndBindingMappingEXT.calloc(stack)
-                        .sType(STYPE_SET_BINDING_MAPPING)
-                        .pNext(chain)
-                        .descriptorSet(0) // push 描述符集 = VK_NULL_HANDLE(layoutSet 0)
-                        .firstBinding(m.firstBinding())
-                        .bindingCount(1)
-                        .resourceMask(0x20) // VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT
-                        .source(0)         // VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT
-                        .sourceData(sd);
-                chain = mp.address();
-            }
             VkDeviceAddressRangeEXT range = VkDeviceAddressRangeEXT.calloc(stack)
                     .address$(baseDeviceAddr + rangeOffset)
                     .size(rangeSize);
             VkBindHeapInfoEXT bindInfo = VkBindHeapInfoEXT.calloc(stack)
                     .sType(STYPE_BIND_HEAP_INFO)
-                    .pNext(chain)
+                    .pNext(0L) // 2026 VUID: 必须 NULL(命令级 mapping 链已退役)
                     .heapRange(range)
-                    .reservedRangeOffset(0L)
-                    .reservedRangeSize(0L); // 笔记 §6 裁决: S1 一律 0/0
+                    .reservedRangeOffset(reservedOffset)
+                    .reservedRangeSize(reservedSize);
             EXTDescriptorHeap.nvkCmdBindResourceHeapEXT(
                     new VkCommandBuffer(commandBufferAddr, device), bindInfo.address());
         }
