@@ -95,6 +95,24 @@ public final class FarTerrainRenderer {
     private FarTerrainRenderer() {
     }
 
+    /**
+     * 设备关闭前释放自有缓冲:VVL 对象追踪要求 vkDestroyDevice 之前释放全部
+     * 设备子对象,否则退出时报 "VkBuffer ... has not been destroyed"。
+     * 由 RenderSystemShutdownMixin 在 RenderSystem.shutdownRenderer HEAD 调用
+     * (DEVICE.close 之前),幂等。
+     */
+    public static synchronized void dispose() {
+        if (vertexBuffer != null) {
+            vertexBuffer.close();
+            vertexBuffer = null;
+            vertexSlice = null;
+        }
+        if (indexBuffer != null) {
+            indexBuffer.close();
+            indexBuffer = null;
+        }
+    }
+
     /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。 */
     public static void attach(final FrameGraphBuilder frame, final LevelTargetBundle targets) {
         FramePass pass = frame.addPass("far_terrain");
