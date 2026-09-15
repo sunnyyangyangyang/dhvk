@@ -1,5 +1,6 @@
 package dev.dhvk;
 
+import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,13 @@ public final class VkHandles {
 
     /** LWJGL pdev wrapper(持活实例, 构造器 getCapabilities 需要); 随 native 句柄一并捕获。 */
     public static volatile VkPhysicalDevice pdevWrapper = null;
+
+    /**
+     * LWJGL device wrapper(S1 任务 2): n 变体堆 API(nvkCmdBindResourceHeapEXT /
+     * nvkWriteResourceDescriptorsEXT / nvkGetBufferDeviceAddress)只收 handle 对象,
+     * 构造器调 getCapabilities() → 必须捕获官方真 wrapper 而非自造。
+     */
+    public static volatile VkDevice deviceWrapper = null;
 
     private VkHandles() {
     }

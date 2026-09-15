@@ -13,6 +13,8 @@ import java.util.Set;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.util.vma.Vma;
+import org.lwjgl.util.vma.VmaAllocatorCreateInfo;
 import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkAllocationCallbacks;
 import org.lwjgl.vulkan.VkDevice;
@@ -20,6 +22,7 @@ import org.lwjgl.vulkan.VkDeviceCreateInfo;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkPhysicalDeviceFeatures2;
 import org.lwjgl.vulkan.VkPhysicalDeviceProperties2;
+import org.lwjgl.vulkan.VkPhysicalDeviceVulkan12Features;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongepowered.asm.mixin.Mixin;
@@ -94,9 +97,16 @@ public abstract class VulkanBackendDeviceSurgeryMixin {
             }
             if (physicalDevice.hasDeviceExtension("VK_KHR_buffer_device_address")) {
                 deviceExtensions.add("VK_KHR_buffer_device_address");
+                // run13 根因 ③: DEVICE_ADDRESS 内存分配位 / vkGetBufferDeviceAddress 都要求设备
+                // 启用 bufferDeviceAddress feature. 复用官方 VK12_FEATURES_STRUCT 链节点
+                // (timelineSemaphore/hostQueryReset 同款), 支持位查询与字段写入全由官方机制托管
+                vulkanFeatures.add(new VulkanFeature(VulkanBackend.VK12_FEATURES_STRUCT, "bufferDeviceAddress",
+                        VkPhysicalDeviceVulkan12Features.BUFFERDEVICEADDRESS));
             }
             DhVkClient.surgeryApplied = true;
-            LOGGER.info("[dhvk] device surgery applied: VK_EXT_descriptor_heap + dep closure + descriptorHeap feature");
+            LOGGER.info(
+                    "[dhvk] device surgery applied: VK_EXT_descriptor_heap + dep closure + descriptorHeap/"
+                            + "bufferDeviceAddress features");
         }
         // 调回原方法(实参已被就地加料; 负门槛 build 或驱动无扩展时原样透传)
         return createDevice(deviceExtensions, physicalDevice, vulkanFeatures);
@@ -130,6 +140,24 @@ public abstract class VulkanBackendDeviceSurgeryMixin {
             }
         }
         return VK12.vkCreateDevice(pdev, ci, alc, ptr);
+    }
+
+    private static final String CREATE_VMA_DESC = "createVma(Lorg/lwjgl/vulkan/VkDevice;)J";
+    // run15 教训: 靶子描述符的返回类型必须与真方法一致 —— vmaCreateAllocator 返回 **int**
+    // (栞写成 )J → 0 target scanned → mixin apply 炸); handler 返回类型同理必须 int
+    private static final String VMA_CREATE_ALLOCATOR_TARGET =
+            "org/lwjgl/util/vma/Vma.vmaCreateAllocator(Lorg/lwjgl/util/vma/VmaAllocatorCreateInfo;"
+                    + "Lorg/lwjgl/PointerBuffer;)I";
+
+    @Redirect(method = CREATE_VMA_DESC, at = @At(value = "INVOKE", target = VMA_CREATE_ALLOCATOR_TARGET))
+    // VMA 内存池要认识 DEVICE_ADDRESS 内存类型, 才能给 BDA 几何体(vbo/ibo/arena)分配设备可寻址内存:
+    // 补 VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT. 异类静态靶子 → handler 必须 static(第三轮实测规矩)
+    private static int dhvkVmaAllocatorSurgery(VmaAllocatorCreateInfo createInfo, PointerBuffer pointer,
+            VkDevice vkDevice) {
+        if (DhVkClient.surgeryApplied) {
+            createInfo.flags(createInfo.flags() | Vma.VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT);
+        }
+        return Vma.vmaCreateAllocator(createInfo, pointer);
     }
 
     // 链净化器: 官方栈上 sType=0(STYPE 半初始化写歪)/ 已存在的堆节点全部摘除,

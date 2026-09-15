@@ -6,24 +6,34 @@ import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.framegraph.FrameGraphBuilder;
 import com.mojang.blaze3d.framegraph.FramePass;
+import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.BlendFactor;
+import com.mojang.blaze3d.shaders.UniformType;
+import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
+import com.mojang.blaze3d.vulkan.VulkanRenderPipeline;
+import dev.dhvk.heap.DescriptorHeap;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BindGroupLayouts;
 import net.minecraft.client.renderer.LevelTargetBundle;
 import net.minecraft.resources.Identifier;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.VK12;
+import org.lwjgl.vulkan.VkBufferDeviceAddressInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,6 +84,17 @@ public final class FarTerrainRenderer {
     private static final Identifier SHADER = Identifier.fromNamespaceAndPath("dhvk", "core/far_terrain");
     private static final Identifier PIPELINE_LOCATION = Identifier.fromNamespaceAndPath("dhvk", "pipeline/far_terrain");
 
+    /**
+     * S1 任务 2 几何堆源 BGL:phantom UBO 绑定 VBO/IBO(描述符 payload = 墙 VBO/IBO 的设备地址区间;
+     * 驱动经堆描述符取地址,笔记 §1.6 裁决)。shader 侧对应
+     * {@code layout(std140) uniform VBO { vec4 pad; }} 形块;官方 pushDescriptors 对缺失 uniform 抛异常,
+     * 故 render() 里必须 setUniform 填充(双通道:classic push 描述符 + 堆 mapping 重定向)。
+     */
+    private static final BindGroupLayout GEOMETRY = BindGroupLayout.builder()
+        .withUniform("VBO", UniformType.UNIFORM_BUFFER)
+        .withUniform("IBO", UniformType.UNIFORM_BUFFER)
+        .build();
+
     private static final RenderPipeline PIPELINE = RenderPipeline.builder()
         .withLocation(PIPELINE_LOCATION)
         .withVertexShader(SHADER)
@@ -81,6 +102,7 @@ public final class FarTerrainRenderer {
         .withBindGroupLayout(BindGroupLayouts.GLOBALS)
         .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
         .withBindGroupLayout(BindGroupLayouts.FOG)
+        .withBindGroupLayout(GEOMETRY)
         .withColorTargetState(new ColorTargetState(new BlendFunction(BlendFactor.ZERO, BlendFactor.ONE)))
         .withVertexBinding(0, DefaultVertexFormat.POSITION_COLOR)
         .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
@@ -88,9 +110,19 @@ public final class FarTerrainRenderer {
         .withDepthStencilState(DepthStencilState.DEFAULT)
         .build();
 
+    /** S1 任务 2: 几何描述符承载堆(持久,init 建一次;墙 A/B 的 VBO/IBO 地址注册在 cell 0)。 */
+    private static final long CELL_CAPACITY = 8192L;
+
     private static GpuBuffer vertexBuffer;
     private static GpuBufferSlice vertexSlice;
     private static GpuBuffer indexBuffer;
+    private static DescriptorHeap heap;
+    /** 墙 VBO/IBO 的设备地址(注册进堆描述符的 payload)。 */
+    private static long vboDeviceAddress = 0L;
+    private static long iboDeviceAddress = 0L;
+    /** phantom 绑定在合并 set layout 里的索引(首帧按名解析;-1 = 未就绪)。 */
+    private static int vboBinding = -1;
+    private static int iboBinding = -1;
 
     private FarTerrainRenderer() {
     }
@@ -111,6 +143,15 @@ public final class FarTerrainRenderer {
             indexBuffer.close();
             indexBuffer = null;
         }
+        // S1 任务 2: 堆表只引用墙缓冲的设备地址(数字, 无对象依赖) → arena 之后、设备关闭之前关堆
+        if (heap != null) {
+            heap.close();
+            heap = null;
+        }
+        vboDeviceAddress = 0L;
+        iboDeviceAddress = 0L;
+        vboBinding = -1;
+        iboBinding = -1;
     }
 
     /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。mod 自禁用时不挂 pass。 */
@@ -141,14 +182,64 @@ public final class FarTerrainRenderer {
 
         GpuTextureView colorView = mainTarget.getColorTextureView();
         GpuTextureView depthView = mainTarget.getDepthTextureView();
-        try (RenderPass renderPass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
+        // S1 任务 2: wrapper 即堆绑定的发射点(笔记 §2); CBU 经 DhvkCommandEncoder
+        // 探针接口读取(官方 wrapper 的 backend 访问器是 protected, mod 侧不可见)
+        CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+        try (RenderPass renderPass = encoder.createRenderPass(
                 () -> "FarTerrain", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
             renderPass.setPipeline(PIPELINE);
             RenderSystem.bindDefaultUniforms(renderPass);
             renderPass.setUniform("DynamicTransforms", dynamicTransforms);
+            // phantom 绑定填充:官方 pushDescriptors 对合并 layout 的每个 UNIFORM_BUFFER 条目
+            // 缺值即抛 "Missing uniform", 且恒写 classic 描述符 —— 堆 mapping 在其上重定向(笔记 §8)
+            renderPass.setUniform("VBO", vertexSlice);
+            renderPass.setUniform("IBO", indexBuffer.slice());
             renderPass.setVertexBuffer(0, vertexSlice);
             renderPass.setIndexBuffer(indexBuffer, IndexType.SHORT);
+            // 堆源绑定:整表 + VBO/IBO 绑定的命令级 mapping(setPipeline 后、drawIndexed 前)
+            dhvkBindHeap(encoder);
             renderPass.drawIndexed(12, 1, 0, 0, 0);
+        }
+    }
+
+    /** S1 任务 2: 每帧在 encoder 当前 CBU 上绑整表 + phantom 绑定的堆源 mapping 链。 */
+    private static void dhvkBindHeap(final CommandEncoder encoder) {
+        if (heap == null) {
+            return;
+        }
+        if (vboBinding < 0) {
+            resolvePhantomBindings();
+        }
+        if (vboBinding < 0 || iboBinding < 0) {
+            // 首帧竞态: 管线尚未编译 → 本帧退化为 classic 通道, 次帧自愈(不兜底不崩)
+            return;
+        }
+        long cbu = ((DhvkCommandEncoder) (Object) encoder).dhvkCurrentCbu();
+        if (cbu == 0L) {
+            return;
+        }
+        // 整表绑定(rangeOffset=0 → mapping heapOffset = 表内绝对槽位偏移)
+        heap.bind(cbu, 0L, heap.sizeBytes(),
+                new DescriptorHeap.Mapping(vboBinding, heap.slotOffsetOf(0, 0)),
+                new DescriptorHeap.Mapping(iboBinding, heap.slotOffsetOf(0, 1)));
+    }
+
+    /** 按名扫描合并 set layout 的条目, 定位 phantom 绑定索引(首帧 setPipeline 已完成管线编译)。 */
+    private static void resolvePhantomBindings() {
+        if (!(RenderSystem.getDevice().precompilePipeline(PIPELINE) instanceof VulkanRenderPipeline vrp)) {
+            return;
+        }
+        List<com.mojang.blaze3d.vulkan.VulkanBindGroupLayout.Entry> entries = vrp.layout().entries();
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).name().equals("VBO")) {
+                vboBinding = i;
+            } else if (entries.get(i).name().equals("IBO")) {
+                iboBinding = i;
+            }
+        }
+        if (vboBinding >= 0 && iboBinding >= 0) {
+            LOGGER.info("[dhvk] phantom bindings resolved in merged layout: VBO={} IBO={} (total {} entries)",
+                    vboBinding, iboBinding, entries.size());
         }
     }
 
@@ -174,12 +265,47 @@ public final class FarTerrainRenderer {
         putQuadIndices(ibo, 4);
         ibo.rewind();
 
+        // S1 任务 2: usage 叠加 USAGE_UNIFORM —— 官方 pushDescriptors 对 UNIFORM_BUFFER 条目
+        // 强制 usage & 128, phantom 绑定要经 setUniform 用这两个缓冲填充(笔记 §8);
+        // VulkanConst.bufferUsageToVk 逐位 OR, 组合位合法.
+        // run13 根因 ②: 堆描述符 payload = 本缓冲的设备地址 → vkGetBufferDeviceAddress 要求
+        // usage 带设备地址位(2026 值空间 = SHADER_DEVICE_ADDRESS, 经 VulkanConstBdaUsageMixin
+        // 从 DEVICE_ADDRESS 标记位折算) + DEVICE_ADDRESS 内存(VMA 自动), 三要素齐备方合法
         vertexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_vbo",
-                GpuBuffer.USAGE_VERTEX, vbo);
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS,
+                vbo);
         vertexSlice = vertexBuffer.slice();
         indexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_ibuffer",
-                GpuBuffer.USAGE_INDEX, ibo);
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS,
+                ibo);
         LOGGER.info("[dhvk] S0 far-terrain buffers created (vbo={}B, ibo={}B)", vbo.capacity(), ibo.capacity());
+
+        // S1 任务 2: 描述符堆 = 墙几何地址的承载体(持久堆; 任务 3 才换正式 arena,
+        // 本任务复用 S0 GpuBuffer 当 arena 雏形, 只读其设备地址)
+        if (VkHandles.deviceWrapper == null) {
+            throw new IllegalStateException("[dhvk] device wrapper not captured before heap init");
+        }
+        heap = new DescriptorHeap(CELL_CAPACITY, 2);
+        // run17 规避(VVL 1.4.341 的 1 代 vkGetBufferDeviceAddress pNext walker 内部悬空指针 SEGV):
+        // vbo/ibo 被 VMA 先 bind 躲不开 → 走 2 代 vkGetBufferDeviceAddress2(VVL 独立验证函数,
+        // pInfo 空链, 1 代 walker 够不着)
+        vboDeviceAddress = bdaAddress2(((VulkanGpuBuffer) vertexBuffer).vkBuffer());
+        iboDeviceAddress = bdaAddress2(((VulkanGpuBuffer) indexBuffer).vkBuffer());
+        heap.writeBufferDescriptor(0, 0, vboDeviceAddress, vertexBuffer.size());
+        heap.writeBufferDescriptor(0, 1, iboDeviceAddress, indexBuffer.size());
+        LOGGER.info("[dhvk] wall geometry registered in descriptor heap (cell 0: "
+                + "vbo@0x{} len={}B, ibo@0x{} len={}B)",
+                vboDeviceAddress, vertexBuffer.size(), iboDeviceAddress, indexBuffer.size());
+    }
+
+    /** 2 代 vkGetBufferDeviceAddress(run17 笔记: VVL 1.4.341 的 1 代 walker 有内部悬空指针 bug)。 */
+    private static long bdaAddress2(long vkBuffer) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkBufferDeviceAddressInfo info = VkBufferDeviceAddressInfo.calloc(stack)
+                    .sType$Default()
+                    .buffer(vkBuffer);
+            return VK12.vkGetBufferDeviceAddress(VkHandles.deviceWrapper, info);
+        }
     }
 
     /** 一面 16×16 墙的四色角点(洋红/青/黄/绿),写入 4 个顶点。 */

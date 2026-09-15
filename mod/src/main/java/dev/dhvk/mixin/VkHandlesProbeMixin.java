@@ -43,5 +43,7 @@ public abstract class VkHandlesProbeMixin {
         // S1 任务1: 连 wrapper 一起捕获(LWJGL 3.4.1 n 变体只收 handle 对象, 且
         // VkPhysicalDevice 构造器调 instance.getCapabilities() → 传 null 实例必 NPE, run8 实证)
         VkHandles.pdevWrapper = this.vkDevice.getPhysicalDevice();
+        // S1 任务2: device wrapper 供堆 API n 变体(new VkCommandBuffer(cbu, deviceWrapper) 等)
+        VkHandles.deviceWrapper = this.vkDevice;
     }
 }
