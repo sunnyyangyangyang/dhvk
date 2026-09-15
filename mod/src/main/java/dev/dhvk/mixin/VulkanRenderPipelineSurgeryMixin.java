@@ -25,7 +25,10 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  *       (2026 值 = 68719476736L, 64 位, 32 位 flags 字段装不下) → 经
  *       {@code VkPipelineCreateFlags2CreateInfo}(sType 1000470005) pNext 节点注入;</li>
  *   <li>每帧 {@code vkCmdBindResourceHeapEXT} 只带堆范围 + 预留区, pNext 必须 NULL
- *       (在 {@code DescriptorHeap.bind} 侧落地)。</li>
+ *       (在 {@code DescriptorHeap.bind} 侧落地);</li>
+ *   <li>任务 3(VRS 门槛): {@code vrsEnabled} 时链头再前置一个
+ *       {@code VkPipelineFragmentShadingRateStateCreateInfoKHR}(2026 形态, 无 rate 图像,
+ *       fragmentSize=2x2 固定率, combiner KEEP)→ dhvk 管线成为 pass 级 2x2 粗化。</li>
  * </ul>
  *
  * <p>手术缝(官方 compile() 是纯静态方法、全部结构体在栈上, 只能 @Redirect 其内部
@@ -55,6 +58,11 @@ public abstract class VulkanRenderPipelineSurgeryMixin {
     private static final int STYPE_PIPELINE_CREATE_FLAGS_2 = 1000470005;
     /** VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT (2026 = 2^36, 64 位)。 */
     private static final long FLAGS2_DESCRIPTOR_HEAP = 68719476736L;
+    /** VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR (2026 头文件实锤)。 */
+    private static final int STYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE = 1000226001;
+    /** S1 VRS 门槛: dhvk 管线片元率 2x2(2026 管线态固定率, 零 per-frame 开销)。 */
+    private static final int DHVK_FRAGMENT_SIZE_X = 2;
+    private static final int DHVK_FRAGMENT_SIZE_Y = 2;
 
     // 靶描述符: 字节码 invoke 的**精确**形态(异类静态/实例 setter 目标 → handler 必须 static,
     // run15 规矩: 目标描述符与 handler 签名逐字符一致, 错一个字母 = 0 target scanned)
@@ -81,6 +89,25 @@ public abstract class VulkanRenderPipelineSurgeryMixin {
                     .sType(STYPE_PIPELINE_CREATE_FLAGS_2)
                     .pNext(renderingInfo.address()) // 3.4.1: struct 侧 pNext 只有 long 重载, 无 typed 变体
                     .flags(FLAGS2_DESCRIPTOR_HEAP);
+            if (DhVkClient.vrsEnabled) {
+                // 任务 3(VRS 门槛): 2026 VK_KHR_fragment_shading_rate 管线态固定 2x2 率
+                // (S1 门槛: dhvk 管线 pass 级粗化, 官方管线不动 → 因子 A/B 的唯一差异点)。
+                // 头文件实测(1.4.357 与 2026 main 同形): sType@0, pNext@8,
+                // fragmentSize@16/20, combinerOps@24/28, sizeof=32。
+                // 全字面量写入(run6 教训: 不读 LWJGL 半初始化 STYPE 静态); combiner KEEP=0。
+                // 2026 形态无 rate 图像: 管线态 fragmentSize 即生效率, 零 per-frame 开销;
+                // 链头 = fsr 节点 -> flags2 节点 -> renderingInfo。
+                long fsr = MemoryUtil.nmemCalloc(32, 16);
+                // LWJGL 3.4.1(-unsafe) 的 MemoryUtil 只有两参 memPut*(address, value), 无 nmemPut*
+                // (实锤: 真 jar javap; 净化器同款用法) → 偏移直接加进地址
+                MemoryUtil.memPutInt(fsr, STYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE); // sType @0
+                MemoryUtil.memPutAddress(fsr + 8, node); // pNext @8 -> flags2 节点
+                MemoryUtil.memPutInt(fsr + 16, DHVK_FRAGMENT_SIZE_X); // fragmentSize.width @16
+                MemoryUtil.memPutInt(fsr + 20, DHVK_FRAGMENT_SIZE_Y); // fragmentSize.height @20
+                MemoryUtil.memPutInt(fsr + 24, 0); // combinerOps[0] @24 = KEEP
+                MemoryUtil.memPutInt(fsr + 28, 0); // combinerOps[1] @28 = KEEP
+                return createInfo.pNext(fsr);
+            }
             return createInfo.pNext(node);
         }
         return createInfo.pNext(renderingInfo);

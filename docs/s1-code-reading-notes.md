@@ -1084,3 +1084,86 @@ vkCmdBindResourceHeapEXT 之后、vkCmdDrawIndexed 之前) 按规格立即作废
   + VVL 双档零报错(run39/40 vs 基线)→ **任务 2 收口**。
 - S1 余程: VRS + 合成 ring 流式(+1ms 预算)等后续闸门。
 
+
+
+### 任务 3 VRS: 侦察实锤 + 实施设计(2026-09-15 夜, run41 前)
+- **2026 VRS 真形态 = VK_KHR_fragment_shading_rate(spec_version 2)**: VK_EXT_variable_rate_image
+  已从最新 registry/头文件移除(1.4.362 无 VRI 结构体); 5090(615.71.09, 291 设备扩展,
+  vulkaninfo 留档 /tmp/vrs/vulkaninfo-5090.txt)暴露 KHR_fragment_shading_rate(rev2) +
+  NV_fragment_shading_rate_enums + NV_shading_rate_image + NV_fragment_coverage_to_color +
+  NV_framebuffer_mixed_samples; 无 VRI/FDM/FDM2/NV_coverage_modulation。
+- 5090 FSR 能力: min/maxFragmentShadingRateAttachmentTexelSize=16x16, maxFragmentSize=4x4,
+  coverage/rasterization samples 至 16; features pipeline/primitive/attachment = 全 true。
+- **2026 结构体形态(refs 1.4.357 头 + LWJGL 3.4.1(2026-02-03 构建) 双验)**:
+  - VkPipelineFragmentShadingRateStateCreateInfoKHR = { sType=1000226001, pNext,
+    VkExtent2D fragmentSize, VkFragmentShadingRateCombinerOpKHR combinerOps[2] }
+    —— **管线态无 shading rate image**(2026 纯速率形态);
+  - VkPhysicalDeviceFragmentShadingRateFeaturesKHR = { 1000226003, pNext,
+    pipelineFragmentShadingRate@16, primitive@17, attachment@18 };
+  - 动态态: VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR=1000226000,
+    vkCmdSetFragmentShadingRateKHR(cbu, const VkExtent2D* pFragmentSize, combinerOps[2])
+    (2026 签名已无 rate image);
+  - CombinerOp: KEEP=0 REPLACE=1 MIN=2 MAX=3 MUL=4;
+  - LWJGL 3.4.1 运行时(loom cache jar)全绑定 KHRFragmentShadingRate(含
+    VkRenderingFragmentShadingRateAttachmentInfoKHR{imageView,imageLayout,texelSize} 备选)。
+- **注入点(官方反编译 mc-src/client 实证)**:
+  - 管线: VulkanRenderPipeline.compile L184 createInfo($Buffer 栈) → L197 pNext(renderingInfo)
+    → L200 VK12.vkCreateGraphicsPipelines; 既有 VulkanRenderPipelineSurgeryMixin 三靶
+    (flags2 链头 / stage.pName 映射 / layout(0)) 全在 compile 方法, pipelineSurgeryArmed
+    门控 → **FSR 状态节点挂同一手术链头**(fsrNode→flags2Node→renderingInfo)。
+  - pass(备选 attachment 级): VulkanCommandEncoder.createRenderPass L280 VkRenderingInfo(栈)
+    → L304 vkCmdBeginRenderingKHR。
+- **实施设计(run41, 最简机制)**:
+  1. 设备手术 mixin: 扩展串 + "VK_KHR_fragment_shading_rate"(hasDeviceExtension 门控) +
+     VulkanFeature(字面量 STYPE=1000226003, size=32, offset=16 即 pipeline 位) → 设备启用
+     pipelineFragmentShadingRate;
+  2. 管线手术 mixin: armed && vrsEnabled → 新 FSR 状态永生节点
+     (LWJGL VkPipelineFragmentShadingRateStateCreateInfoKHR): fragmentSize=(2,2)
+     [固定速率 = "pass 级 2×2" 本体; 不启用动态态, 无 per-frame 开销],
+     combinerOps={KEEP,KEEP}; createInfo.pNext(fsrNode) 为链头;
+  3. vrsEnabled = 扩展在 + feature true(5090 实锤); env DHVK_VRS=0 强制关(因子炉 A/B);
+  4. 验收: run41a(VRS on) vs run41b(VRS off) A/B —— 远带/墙 A 轮廓 2×2 速率 vs 全速率,
+     VVL 默认档+全档双零; 若 VVL 报"管线态 fragmentSize 语义 = 上限"类错 → 改挂
+     (4,4) 上限 + 动态态 VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR + 每 CBU
+     vkCmdSetFragmentShadingRateKHR(cbu,&{2,2},{KEEP,KEEP})(cbu 句柄已有) → 听 VVL 点名;
+  5. MSAA 注: FSR 2×2 在 MSAA N 目标 = 覆盖率调制(N 样本的子样着色), N=1..16 设备全支持,
+     无分支。
+
+
+### 任务 3 VRS: 实锤落地 + run41a/b/c 裁决 + 收口(2026-09-15 深夜)
+- **落地(三文件, 字面量手术, 侦察设计逐字实现)**:
+  - 设备(VulkanBackendDeviceSurgeryMixin): 扩展串 "VK_KHR_fragment_shading_rate"
+    (hasDeviceExtension 门控) + VulkanFeature(VulkanPNextStruct(1000226003, 32),
+    "pipelineFragmentShadingRate", 16); 扩展/feature 两面恒同(A/B 设备配置零差,
+    唯一差 = 管线态节点); DhVkClient.vrsEnabled 由 DHVK_VRS(0=关) 门控。
+  - 管线(VulkanRenderPipelineSurgeryMixin.dhvkPipelineFlags2): armed && vrsEnabled →
+    FSR 状态永生节点头插: sType=1000226001@0, pNext@8→flags2 节点,
+    fragmentSize=(2,2)@16/20, combinerOps={KEEP,KEEP}=@24/28, sizeof=32;
+    全两参 memPut*(偏移加进地址)写入 —— LWJGL 3.4.1(-unsafe) 的 MemoryUtil
+    **没有 nmemPut***, 只有 memPut*(address, value)(真 jar javap 实锤, 本夜编译踩坑)。
+  - DhVkClient: vrsEnabled / vrsEnvOn() / FSR 三常量。
+- **官方链行为实证**: findOrCreateStructInPNextChain 对 FSR feature 结构体
+  **自动建节点并插链**(链净化器计数 6 → **7 官方节点**, 原样保留),
+  VulkanFeature.set 写 bool —— 设备 feature 托管全通, 无需手搓 feature 链节点。
+- **run41a(VRS on, 默认 VVL 档)**: 门槛行 "rate state ON"; 4 堆管线带 FSR 节点编译;
+  VVL 0; RD32; 用户截图: 墙 A 粉/蓝板 + 探针六色小片全活(雾前清晰); 干净退出。
+- **run41b(DHVK_VRS=0, 默认档)**: 门槛行 "rate state OFF (DHVK_VRS=0)";
+  设备链同为 7 官方节点(设备配置与 on 面逐字节一致, 因子纯度达成);
+  VVL 0; RD32; 用户截图 "一样的"(平色板上 2×2 vs 1×1 低于肉眼阈值 —— S1 机制门槛
+  设计内: 率的可见收益留给 S2 per-LOD 率图); 干净退出。
+- **run41c(VRS on, full-profile: 同步 + GPU 协助 + 最佳实践)**: 进程内 ~100s,
+  VVL **0 条**; RD32; 干净断连。FSR pNext 链节点过最严验证器零点名。
+- **基线 diff(vs docs/baselines vanilla 基线, 三跑取最严)**:
+  | 项 | 基线 | run41a/c | 判读 |
+  |---|---|---|---|
+  | VVL 消息(默认档 run41a / 全档 run41c) | 0 | 0 / 0 | 三零对齐, 闸门通过 |
+  | 设备扩展 | 10 | 14 | +descriptor_heap +maintenance5 +buffer_device_address(任务 2)+ **VK_KHR_fragment_shading_rate**(任务 3)= 设备手术有意增量 |
+  | 设备 feature | - | +descriptorHeap +bufferDeviceAddress +pipelineFragmentShadingRate | 手术有意增量 |
+  | swapchain out of date WARN | 0 | 0 | 本夜三跑无暂停, 瞬态项未现 |
+  | 401/Realms 离线, icon, Missing sound, LWJGL 行 | 有 | 有 | 双方共有无害行 |
+- **验收: S1 任务 3(VRS 门槛)收口** —— 2026 真形态(KHR FSR, 无 rate image)下
+  设备 ext+feature 字面量手术 + 管线态固定 2×2 率节点, 机制三面咬死:
+  开关双向有效(on/off 门槛行 + 因子 A/B 用户 "一样的")+ 渲染全活(墙/探针)
+  + VVL 默认档/全档零(run41a/41b/41c vs 基线)。**S1 闸门进度:
+  gate pos ✅ / gate neg ✅ / heap VVL 双零 ✅ / VRS ✅ / 基线 diff ✅,
+  余程 = 任务 4 合成 ring 流式(+1ms 预算)**。

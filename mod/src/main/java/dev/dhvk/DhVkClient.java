@@ -32,6 +32,16 @@ public final class DhVkClient implements ClientModInitializer {
     /** 结构体总大小 = 24 (sType 8 + pNext 8 + descriptorHeap 4 + descriptorHeapCaptureReplay 4)。 */
     public static final int DESCRIPTOR_HEAP_STRUCT_SIZE = 24;
 
+    // 任务 3(VRS 门槛): 2026 的 VRS = VK_KHR_fragment_shading_rate
+    // (registry 已移除 VK_EXT_variable_rate_image; 5090 驱动暴露 FSR rev2,
+    // pipeline/primitive/attachment 三 feature 全 true —— vulkaninfo 实测)。
+    /** sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR (2026 头文件实锤)。 */
+    public static final int FSR_FEATURES_STYPE = 1000226003;
+    /** pipelineFragmentShadingRate bool 字段结构体内偏移 = 16 (sType 8 + pNext 8)。 */
+    public static final int FSR_PIPELINE_FRAGMENT_SHADING_RATE_OFFSET = 16;
+    /** 结构体总大小 = 32 (sType 8 + pNext 8 + 三个 VkBool32 + 填充, 头文件实测)。 */
+    public static final int FSR_FEATURES_STRUCT_SIZE = 32;
+
     /** 设备硬门槛未通过 → mod 自禁用(明确日志, 游戏照常跑 vanilla 渲染器)。任务 2~5 的初始化都先查它。 */
     public static volatile boolean disabled = false;
 
@@ -44,6 +54,17 @@ public final class DhVkClient implements ClientModInitializer {
      *  (render 线程内 set/clear, 无竞态; 与 surgeryApplied 同模式)。VulkanRenderPipelineSurgeryMixin
      *  的 @Redirect handler 读它决定是否把 descriptor-heap 创建位/静态映射链注入官方 compile()。 */
     public static volatile boolean pipelineSurgeryArmed = false;
+
+    /** 任务 3(VRS 门槛): 是否在 dhvk 管线注入 2x2 fragmentShadingRate 状态节点。
+     *  由设备手术 handler 在设备创建时置位(扩展在场 + DHVK_VRS 环境开关);
+     *  VulkanRenderPipelineSurgeryMixin 读它决定 pNext 链头是否加 FSR 状态节点。 */
+    public static volatile boolean vrsEnabled = false;
+
+    /** VRS 因子 A/B 开关: DHVK_VRS=0 强制关管线率态节点(设备扩展/feature 照常加,
+     *  两次跑设备配置恒同, 唯一差 = 管线态节点)。默认开。 */
+    public static boolean vrsEnvOn() {
+        return !"0".equals(System.getenv("DHVK_VRS"));
+    }
 
     /** run20: VkShaderDescriptorSetAndBindingMappingInfoEXT 节点指针(native heap 永生, 0 = 尚未建)。
      *  由 ensureHeapSurgery 建好并置位; 管线销毁晚于我们的 dispose, 节点不回收。 */

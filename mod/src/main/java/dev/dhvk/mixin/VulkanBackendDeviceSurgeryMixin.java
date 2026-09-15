@@ -75,6 +75,13 @@ public abstract class VulkanBackendDeviceSurgeryMixin {
     private static final VulkanFeature DESCRIPTOR_HEAP_FEATURE = new VulkanFeature(
             DESCRIPTOR_HEAP_FEATURES_STRUCT, "descriptorHeap", DhVkClient.DESCRIPTOR_HEAP_OFFSET);
 
+    // 任务 3(VRS 门槛): FSR feature 结构体描述符(字面量 sType/size, run6 教训与 descriptor heap 同款);
+    // 官方 findOrCreateStructInPNextChain 自动建链节点, VulkanFeature.set 写 pipelineFragmentShadingRate bool。
+    private static final VulkanPNextStruct FSR_FEATURES_STRUCT = new VulkanPNextStruct(
+            DhVkClient.FSR_FEATURES_STYPE, DhVkClient.FSR_FEATURES_STRUCT_SIZE);
+    private static final VulkanFeature FSR_PIPELINE_FEATURE = new VulkanFeature(
+            FSR_FEATURES_STRUCT, "pipelineFragmentShadingRate", DhVkClient.FSR_PIPELINE_FRAGMENT_SHADING_RATE_OFFSET);
+
     @Redirect(
         method = OUTER_CREATE_DEVICE_DESC,
         at = @At(value = "INVOKE", target = INNER_CREATE_DEVICE_TARGET))
@@ -107,6 +114,22 @@ public abstract class VulkanBackendDeviceSurgeryMixin {
             LOGGER.info(
                     "[dhvk] device surgery applied: VK_EXT_descriptor_heap + dep closure + descriptorHeap/"
                             + "bufferDeviceAddress features");
+        }
+        // 任务 3(VRS 门槛): 驱动暴露 VK_KHR_fragment_shading_rate → 设备加扩展 +
+        // pipelineFragmentShadingRate feature(链节点与 bool 写入全由官方机制托管, 与 descriptor heap 同款)。
+        // 扩展/feature 无条件加(A/B 两次跑设备配置恒同, 唯一差 = 管线态节点);
+        // vrsEnabled 另受 DHVK_VRS 门控(0 = 因子关), 只管管线手术是否加 2x2 率态节点。
+        if (DhVkClient.surgeryEnabled() && physicalDevice != null
+                && physicalDevice.hasDeviceExtension("VK_KHR_fragment_shading_rate")) {
+            deviceExtensions.add("VK_KHR_fragment_shading_rate");
+            vulkanFeatures.add(FSR_PIPELINE_FEATURE);
+            DhVkClient.vrsEnabled = DhVkClient.vrsEnvOn();
+            LOGGER.info(
+                    "[dhvk] VRS gate: VK_KHR_fragment_shading_rate on device; pipeline 2x2 rate state {}"
+                            + " (DHVK_VRS={})",
+                    DhVkClient.vrsEnabled ? "ON" : "OFF", System.getenv("DHVK_VRS"));
+        } else if (DhVkClient.surgeryEnabled() && physicalDevice != null) {
+            LOGGER.info("[dhvk] VRS gate: driver lacks VK_KHR_fragment_shading_rate -> pipeline rate state OFF");
         }
         // 调回原方法(实参已被就地加料; 负门槛 build 或驱动无扩展时原样透传)
         return createDevice(deviceExtensions, physicalDevice, vulkanFeatures);
