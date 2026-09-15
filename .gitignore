@@ -1,6 +1,13 @@
-# 公开仓库(dhvk): 仅保留 mod/src(dhvk 源码+着色器), 其余全部忽略
+# 公开仓库(dhvk): 保留 mod/src(源码+着色器) + docs(markdown 笔记), 其余全部忽略
 /*
 !/.gitignore
 !/mod/
 /mod/*
 !/mod/src/
+!/docs/
+
+# docs 只收 markdown 笔记; 原始运行日志/文本基线留在私有工作区
+docs/*.log
+docs/**/*.log
+docs/*.txt
+docs/**/*.txt
