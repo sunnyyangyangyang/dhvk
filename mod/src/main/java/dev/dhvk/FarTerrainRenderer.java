@@ -113,8 +113,11 @@ public final class FarTerrainRenderer {
         }
     }
 
-    /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。 */
+    /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。mod 自禁用时不挂 pass。 */
     public static void attach(final FrameGraphBuilder frame, final LevelTargetBundle targets) {
+        if (DhVkClient.disabled) {
+            return;
+        }
         FramePass pass = frame.addPass("far_terrain");
         targets.main = pass.readsAndWrites(targets.main);
         pass.executes(FarTerrainRenderer::render);
@@ -122,7 +125,15 @@ public final class FarTerrainRenderer {
 
     /** 单帧绘制:两面远墙各一对四色三角形(16 块宽 × 16 块高)。 */
     public static void render() {
+        if (DhVkClient.disabled) {
+            return;
+        }
         ensureBuffers();
+        // 首帧竞态: 本帧帧图在 gate 判定前已挂 pass, ensureBuffers 内 gate 失败必须当场退出
+        // (否则空 buffer 走 drawIndexed, GL 回退后端 NPE / VVL 报错)
+        if (DhVkClient.disabled) {
+            return;
+        }
         GpuBufferSlice dynamicTransforms =
                 RenderSystem.getDynamicUniforms().writeTransform(RenderSystem.getModelViewMatrixCopy());
         Minecraft minecraft = Minecraft.getInstance();
@@ -143,6 +154,12 @@ public final class FarTerrainRenderer {
 
     private static synchronized void ensureBuffers() {
         if (vertexBuffer != null) {
+            return;
+        }
+        // 首帧设备已就绪:硬门槛检查(幂等)——descriptorHeap feature 未置位则 mod 自禁用
+        DhVkClient.checkDeviceGate();
+        if (DhVkClient.disabled) {
+            LOGGER.info("[dhvk] far-terrain buffers skipped: mod disabled by device gate");
             return;
         }
 

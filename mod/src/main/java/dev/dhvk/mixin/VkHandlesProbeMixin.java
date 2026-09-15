@@ -40,5 +40,8 @@ public abstract class VkHandlesProbeMixin {
     private void dhvkCaptureVkHandles(CallbackInfo ci) {
         VkHandles.capture(this.vkDevice.address(), this.graphicsQueue.vkQueue().address(),
                 0L, this.vkDevice.getPhysicalDevice().address());
+        // S1 任务1: 连 wrapper 一起捕获(LWJGL 3.4.1 n 变体只收 handle 对象, 且
+        // VkPhysicalDevice 构造器调 instance.getCapabilities() → 传 null 实例必 NPE, run8 实证)
+        VkHandles.pdevWrapper = this.vkDevice.getPhysicalDevice();
     }
 }

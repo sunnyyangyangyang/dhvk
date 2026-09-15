@@ -1,5 +1,6 @@
 package dev.dhvk;
 
+import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,6 +23,9 @@ public final class VkHandles {
     public static long commandPool = 0L;
     public static long physicalDevice = 0L;
     public static boolean captured = false;
+
+    /** LWJGL pdev wrapper(持活实例, 构造器 getCapabilities 需要); 随 native 句柄一并捕获。 */
+    public static volatile VkPhysicalDevice pdevWrapper = null;
 
     private VkHandles() {
     }

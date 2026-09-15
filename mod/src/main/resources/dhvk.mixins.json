@@ -6,6 +6,7 @@
   "mixins": [],
   "client": [
     "VkHandlesProbeMixin",
+    "VulkanBackendDeviceSurgeryMixin",
     "LevelRendererFarPassMixin",
     "ClientPackSourceDevResourcesMixin",
     "RenderSystemShutdownMixin"
