@@ -17,6 +17,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * 该构造器内 graphicsQueue 已由 VulkanQueue 记录构造器完成 vkGetDeviceQueue 填充,
  * 句柄即 LWJGL 地址;commandPool 在设备构造时尚未创建,按 0L 占位,
  * 阶段二可在 VulkanCommandPool 构造器补抓)。
+ *
+ * <p>pdev 句柄取法(S1 任务 0 实测修正,偏离 plan Step 8 的 @Shadow 设想):
+ * 26.2 的 {@code VulkanDevice} 没有 physical device 字段——构造器参数
+ * {@code VulkanPhysicalDevice} 是包装类且在构造末尾被 close()。改为经
+ * LWJGL {@code VkDevice#getPhysicalDevice()} 取裸 pdev(官方同款用法,
+ * 见官方 {@code VulkanBackend} L199/L440;LWJGL 3.4.1 该 API 已 javap 核实)。
+ * pdev 属 instance 级,地址值在 device 存活期内稳定。
  */
 @Mixin(VulkanDevice.class)
 public abstract class VkHandlesProbeMixin {
@@ -31,6 +38,7 @@ public abstract class VkHandlesProbeMixin {
     @SuppressWarnings({"UnusedMethod", "UnusedVariable"})
     @Inject(method = "<init>", at = @At("RETURN"))
     private void dhvkCaptureVkHandles(CallbackInfo ci) {
-        VkHandles.capture(this.vkDevice.address(), this.graphicsQueue.vkQueue().address(), 0L);
+        VkHandles.capture(this.vkDevice.address(), this.graphicsQueue.vkQueue().address(),
+                0L, this.vkDevice.getPhysicalDevice().address());
     }
 }
