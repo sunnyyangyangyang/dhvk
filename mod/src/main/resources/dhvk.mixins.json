@@ -6,7 +6,8 @@
   "mixins": [],
   "client": [
     "VkHandlesProbeMixin",
-    "LevelRendererFarPassMixin"
+    "LevelRendererFarPassMixin",
+    "ClientPackSourceDevResourcesMixin"
   ],
   "injectors": {
     "defaultRequire": 1
