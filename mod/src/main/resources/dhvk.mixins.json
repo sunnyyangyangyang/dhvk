@@ -15,7 +15,8 @@
     "LevelRendererFarPassMixin",
     "ClientPackSourceDevResourcesMixin",
     "RenderSystemShutdownMixin",
-    "VulkanRenderPassPushCancelMixin"
+    "VulkanRenderPassPushCancelMixin",
+    "VulkanTransientMemorySurgeryMixin"
   ],
   "injectors": {
     "defaultRequire": 1

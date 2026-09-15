@@ -1167,3 +1167,84 @@ vkCmdBindResourceHeapEXT 之后、vkCmdDrawIndexed 之前) 按规格立即作废
   + VVL 默认档/全档零(run41a/41b/41c vs 基线)。**S1 闸门进度:
   gate pos ✅ / gate neg ✅ / heap VVL 双零 ✅ / VRS ✅ / 基线 diff ✅,
   余程 = 任务 4 合成 ring 流式(+1ms 预算)**。
+
+### 任务 4 合成 ring 流式: 侦察实锤 + 实施设计(2026-09-15 深夜, run42 前)
+- **官方 2026 baseline = `VulkanTransientMemory`**(vulkan/VulkanTransientMemory.java 已读 API 面):
+  官方 per-frame 几何/ uniform 流式瞬态环 ——
+  - `allocateGpuMapped(size, align, minAlloc, elemSize)` → `GpuBufferSlice.MappedView{slice, ByteBuffer data, onClose}`
+    (host-visible coherent 映射视图; 5090 ReBAR type[4]=DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT,
+    任务 2 堆日志实锤该内存类型在场);
+  - `GpuBufferSlice = record(GpuBuffer buffer, long offset, long length)` + `.slice(off,len)` 子切片
+    + `.map(r,w)`; **单 slice 双描述符**: VBO/IBO 取同一 buffer 不同 offset 区间,
+    各写一个堆描述符(BDA + in-buffer offset, 任务 2 已验证 offset 无碍);
+  - `TransientGpuBuffer(bufferSubmitIndex)` 由官方析构队列按 submit 数自动回收 = ring 零簿记;
+  - 获取 = `encoder.transientMemory()`(systems/CommandEncoder → CommandEncoderBackend 接口,
+    与本 mod 已用的 encoder.createRenderPass 同源);
+  - BDA: slice.buffer() 转 VulkanGpuBuffer.vkBuffer() → 既有 BDA_CACHE 取址通路(任务 2 同款)。
+- **实施 = 让远处的墙『活』**: 替换任务 2 的静态 128B phantom VBO / 24B IBO 为 **per-frame 合成几何** ——
+  CPU 每帧合成远端体素墙网格(16×16 cell, 高度场 = 行波 f(x,y,t) 扫过, per-cell 色相随高度;
+  每顶点格式与任务 2 完全同形: vec3 pos + vec4 color = 28B; IBO uint16), 写入官方瞬态 ring 新 slice,
+  每帧把堆表 VBO/IBO 两槽重写为本帧 slice 的 BDA+offset → 四条堆管线(含任务 3 的 2×2 FSR 节点)
+  画**本帧**几何。探针管线/雾/地形遮挡不变。
+- **新增逻辑三件(其余全复用)**: CPU 合成器 + 3 帧 slice 保留窗(与 DT ring 3-buffer 旋转同节奏,
+  防 GPU 读-CPU 写竞态) + 每帧预算闸门。
+- **+1ms 预算闸门(硬闸门, 不兜底)**: System.nanoTime 包住『合成 + 写入 + 描述符重写』整段,
+  前 N 帧逐帧入日志(table check 同款); 超 1ms → 日志报门槛失败(S1 规矩: 检测即报)。
+- **run42 验收**: RD32 下远带墙逐帧可见『呼吸』(行波扫过 + 色相流动) + VVL 默认档零
+  + 预算日志 ≤1ms + 探针 canary/雾/遮挡不变 → 基线 diff(无新增设备扩展/feature, 任务 3 三零保持)
+  → commit 收口 → **S1 全部闸门闭合**。
+- **风险位(听 VVL 点名)**: TransientGpuBuffer 内存型非 host-visible(无 ReBAR 机器) →
+  官方自带 `uploadStaging` 垫层(仍是 baseline 正身, 非兜底); 有 ReBAR 则不触发。
+
+### 任务 4 实施细节(实锤, run42 前)
+- **2026 usage 值空间实锤(refs 1.4.357 + /tmp/vrs main 双验)**: 官方瞬态块 Vk usage 恒 471
+  = TRANSFER_SRC|TRANSFER_DST|UNIFORM_TEXEL|UNIFORM_BUFFER|INDEX_BUFFER|VERTEX_BUFFER|
+  INDIRECT_BUFFER(1/2/4/16/64/128/256) —— **不含 SHADER_DEVICE_ADDRESS(=0x00020000)**
+  → 瞬态块直接取 BDA 必被 VVL 点名(usage 位是硬规约)。
+- **裁决 = 一处最小手术**: 新 mixin VulkanTransientMemorySurgeryMixin —— @ModifyArg(argsOnly)
+  打 allocateVulkanBlock 内 Vma.vmaCreateBuffer 唯一调用点(LWJGL 3.4.1 签名:
+  (long allocator, VkBufferCreateInfo, VmaAllocationCreateInfo, LongBuffer pBuffer,
+  PointerBuffer pAllocation, VmaAllocationInfo), 调用点实参末位 null), surgeryApplied 时
+  createInfo.usage(usage | 0x00020000)。超集位, 官方自身瞬态用途无副作用; 内存型不变
+  (5090 ReBAR DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT, mapped 直写 + BDA 双全)。
+- **API 实锤**: TransientGpuBuffer.slice()/map() 均 throw("Cannot slice/map transient
+  buffer") → **官方瞬态 slice 只能整块**(allocateGpuMapped/upload 返回值) → 设计修订:
+  每帧 VBO/IBO 各一个 uploadGpu slice(原"单 slice 子切片"方案作废); 官方块 512KB,
+  TransientBlockAllocator 自动打包 + 按 submit 数旋转回收(5090 ReBAR 路径
+  useDeviceMemoryForMappedGpuStaging=true → CPU 直写 device-local, 无 staging 拷贝)。
+- **渲染接线(全复用既有堆表管道)**: streamFrame 在 createRenderPass 前执行(合成 + 双
+  uploadGpu + 3 帧保留窗 + 预算计时); renderPass.setUniform("VBO"/"IBO", 本帧 slice)
+  → 官方捕获窗照记 → dhvkBindHeap 六槽重写零改动; setIndexBuffer 只收 GpuBuffer(整块)
+  → slice 偏移经 drawIndexed 的 firstIndex(字节=offset*2)对齐; 主管线
+  drawIndexed(TOTAL_INDICES=1542, 1, firstIndex, 0, 0), 探针 12 索引同 firstIndex。
+- **几何规格**: VoxelWallSynthesizer —— 16×16 cell 行波墙(x=WALL_A_X, z∈[-8,8] 每 cell
+  1 块, y=56+gy+1.5·sin(0.55z+0.35y+phase), 色相=波相位三通道 sin 流动) + 静态墙 B
+  四角; 293 顶点×28B=8204B VBO, 1542 索引 IBO 3084B; phase=frame*0.12rad
+  (≈1.15Hz 呼吸节奏)。预算闸门 1ms(前 10 帧逐帧日志, 超限 ERROR)。
+- **run42 点火状态(2026-09-15 深夜)**: 任务 4 全部代码落盘并 BUILD SUCCESSFUL
+  (新文件 VoxelWallSynthesizer.java + VulkanTransientMemorySurgeryMixin.java;
+  FarTerrainRenderer 流式接线; mixin json +1)。run42 后台点火, 日志 /tmp/s1-t2-r42.log。
+  验收: 远带墙逐帧行波"呼吸"(RD32) + 预算日志 ≤1ms + VVL 零 + 探针 canary 活
+  → 基线 diff(设备扩展/feature 无新增, 任务 3 状态保持) → commit 收口 S1。
+  ⚠️ 若 VVL 点名瞬态块 usage/内存型 → 听点名调 VulkanTransientMemorySurgeryMixin
+  (usage 位) 或换官方 uploadStaging 垫层路径(仍 baseline)。
+  mixin 0.8.7 @ModifyArg 实锤: 无 args/argsOnly 选择器 → handler 收全参, 返回类型即替换目标实参。
+
+### 任务 4 run 裁决 + S1 收口(run42 / run43 / run44)
+- **run42**(原 16×16 墙, VVL 默认档, VRS ON): VVL census 0(= 基线); stream budget
+  frame1 719µs(分配器冷启动), 稳态 138-202µs, 闸门 1000µs, 全程未超; VRS gate ON
+  (2×2 rate state); chain 7 官方节点 + 堆节点; device gate PASSED; 表检查 5 连帧:
+  VBO/IBO slice BDA 逐帧滚动(5 个瞬态块 0x39ea→0x3a09 轮换, 表槽驱动方言字节逐帧翻新)
+  = 逐帧流式字节级证据; 干净退出, 堆关闭。用户山顶视角 in-game 截图见雾缘 canary 白点。
+- **run43**: 40 秒短会话, 各项复绿(预算 139-207µs); 视觉未确认 —— 用户当时在看一个
+  冻结窗口(两张截图逐像素同帧、HUD 缺失 = 幽灵窗), 新窗口未被注视。
+- **run44**(墙放大目验: GRID 16→32, z±16, y56..108 = 32 块宽 × 52 块高, 波相位/机制
+  一字未动; VBO 30604B / IBO 12300B): VVL census 0; 预算稳态 375-508µs(frame1 711µs)
+  仍富余 ~3 倍; BDA 逐帧滚动(0x3a07→0x3a15→…); **用户目验: 远带雾里升起一面高于全部
+  树线的巨墙, 红色相位, 墙身逐帧起伏**(Game Menu 截图) → **任务 4 闸门 PASS**。
+- **基线 diff(任务 4)**: 设备面零新增扩展 / feature(运行时仅官方瞬态环 + 单点
+  @ModifyArg usage|SDA 手术) → 任务 3 状态原样保持(设备扩展 10→14, features +3,
+  VVL 默认档 0=0, 全量档 run41c 0)。
+- **S1 收口**: 门槛正 ✅ / 门槛负 ✅ / 堆 VVL 双零 ✅ / VRS 闸门 ✅ / 合成 ring 流式 ✅
+  → **S1 全部闸门闭合**。S2 展望 = LOD 阶梯 + 遮挡剔除 + shader 时钟遥测 + 逐 LOD VRS
+  rate map(2026 FSR rev2 的 rate image 面)。

@@ -16,6 +16,7 @@ import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.systems.TransientMemory;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
@@ -84,11 +85,12 @@ public final class FarTerrainRenderer {
      * 被官方雾吞没"的远带行为。4000 块规格(超出官方远平面)留待 S3 自有远平面承接。
      */
     private static final float WALL_B_X = -2000.0F;
-    /** 墙面 Y 范围(块):地面带附近,正对地平线方向。 */
+    /** 墙面 Y 范围(块):run44 起放大为 56..108(52 块高)—— 墙顶高出远带树线,
+     *  在地面视角即可越过树冠辨认; S1 目验验收用, 波相位/机制不变。 */
     private static final float WALL_Y0 = 56.0F;
-    private static final float WALL_Y1 = 72.0F;
-    /** 墙面 Z 半宽(块)。 */
-    private static final float WALL_HALF_Z = 8.0F;
+    private static final float WALL_Y1 = 108.0F;
+    /** 墙面 Z 半宽(块):run44 起 ±16(32 块宽)。 */
+    private static final float WALL_HALF_Z = 16.0F;
 
     private static final Identifier SHADER = Identifier.fromNamespaceAndPath("dhvk", "core/far_terrain");
     private static final Identifier SHADER_PROBE = Identifier.fromNamespaceAndPath("dhvk", "core/far_terrain_probe");
@@ -298,6 +300,12 @@ public final class FarTerrainRenderer {
         DhVkClient.mappingInfoNode = 0L;
         DhVkClient.pipelineSurgeryArmed = false;
         DhVkClient.DHVK_PIPELINES.clear();
+        // 任务 4: 流式状态复位(瞬态块由官方析构队列回收; BDA_CACHE 按句柄缓存, 进程级清)
+        streamVboSlice = null;
+        streamIboSlice = null;
+        STREAM_VBO_RETENTION.clear();
+        STREAM_IBO_RETENTION.clear();
+        BDA_CACHE.clear();
         frameCounter = 0;
     }
 
@@ -357,30 +365,96 @@ public final class FarTerrainRenderer {
         // 窗内 setUniform 由 RenderPassUniformProbeMixin 记入 DhVkClient.uniformSlices
         DhVkClient.uniformCaptureArmed = true;
         DhVkClient.UNIFORM_SLICES.clear();
+        // S1 任务 4: per-frame 合成几何(官方瞬态 ring 双 slice + 3 帧保留窗); 失败 = 门槛
+        // 不过 → mod 自禁用(不兜底), 本帧不出 pass
+        streamFrame(encoder);
+        if (DhVkClient.disabled) {
+            return;
+        }
         try (RenderPass renderPass = encoder.createRenderPass(
                 () -> "FarTerrain", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
-            // 主管线(DEFAULT 纯写入)绘双墙; 几何经堆源描述符(cell 0), uniform 经
-            // 每帧堆表重写(表字节 run24 已读回验证 6/6 一致)。
+            // 主管线(DEFAULT 纯写入)绘双墙; 几何经堆源描述符(cell 0, 任务 4 起 = 本帧瞬态
+            // slice 的 BDA), uniform 经每帧堆表重写。
             renderPass.setPipeline(PIPELINE);
             RenderSystem.bindDefaultUniforms(renderPass);
             renderPass.setUniform("DynamicTransforms", dynamicTransforms);
             // phantom 绑定填充:官方 pushDescriptors 对合并 layout 的每个 UNIFORM_BUFFER 条目
             // 缺值即抛 "Missing uniform", 且恒写 classic 描述符 —— run22 起全量堆映射在其上重定向
-            renderPass.setUniform("VBO", vertexSlice);
-            renderPass.setUniform("IBO", indexBuffer.slice());
-            renderPass.setVertexBuffer(0, vertexSlice);
-            renderPass.setIndexBuffer(indexBuffer, IndexType.SHORT);
+            renderPass.setUniform("VBO", streamVboSlice);
+            renderPass.setUniform("IBO", streamIboSlice);
+            renderPass.setVertexBuffer(0, streamVboSlice);
+            // 索引绑定整块(官方 API 只收 GpuBuffer), slice 内偏移经 drawIndexed 的
+            // firstIndex(字节)对齐
+            renderPass.setIndexBuffer(streamIboSlice.buffer(), IndexType.SHORT);
             // 堆源绑定:每帧重写 official uniform 堆描述符 + 绑整表(setPipeline 后、drawIndexed 前)
             dhvkBindHeap(encoder);
-            renderPass.drawIndexed(12, 1, 0, 0, 0);
+            int firstIndex = (int) (streamIboSlice.offset() * 2L);
+            renderPass.drawIndexed(VoxelWallSynthesizer.TOTAL_INDICES, 1, firstIndex, 0, 0);
             // run28: 探针二绘(顶点/索引绑定沿主管线, 堆状态沿用; 探针 layout 同名 uniform
             // 已由主管线 setUniform 记录 → 其 pushDescriptors 推同款 classic 描述符)。
             // NDC 钉死 + 深度恒过 → 无论矩阵健康与否, 两块色板必现屏; RGB = ModelViewMat
             // 行0 原始值(GPU 侧堆读真值), 与 CPU truth 日志对拍裁决 UBO 静态映射抓取。
             renderPass.setPipeline(PIPELINE_PROBE);
-            renderPass.drawIndexed(12, 1, 0, 0, 0);
+            renderPass.drawIndexed(12, 1, firstIndex, 0, 0);
         } finally {
             DhVkClient.uniformCaptureArmed = false;
+        }
+    }
+
+    // ============ S1 任务 4: 合成 ring 流式(官方 VulkanTransientMemory 瞬态环) ============
+    /** 本帧瞬态 slice(VBO/IBO 各一); render 线程独占。 */
+    private static GpuBufferSlice streamVboSlice;
+    private static GpuBufferSlice streamIboSlice;
+    /** 3 帧保留窗(与 DT ring 3-buffer 旋转同节奏; 官方析构队列按 submit 数回收块,
+     *  保留窗只是显式防 GPU in-flight 读-CPU 再分配的引用窗)。 */
+    private static final int STREAM_RETENTION_FRAMES = 3;
+    private static final java.util.ArrayDeque<GpuBufferSlice> STREAM_VBO_RETENTION = new java.util.ArrayDeque<>();
+    private static final java.util.ArrayDeque<GpuBufferSlice> STREAM_IBO_RETENTION = new java.util.ArrayDeque<>();
+    /** +1ms 预算闸门(硬闸门, 不兜底): 合成 + 双 slice 上传的 CPU 整段成本。 */
+    private static final long STREAM_BUDGET_US = 1000L;
+    private static final int STREAM_BUDGET_LOG_FRAMES = 10;
+
+    /** 任务 4: 每帧合成远端几何 → 官方瞬态 ring 双 slice(VBO/IBO), 预算计时。
+     *  失败 = 门槛不过 → mod 自禁用(明确日志, 不兜底)。 */
+    private static void streamFrame(final CommandEncoder encoder) {
+        long t0 = System.nanoTime();
+        ByteBuffer vbo = ByteBuffer.allocateDirect(VoxelWallSynthesizer.VBO_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer ibo = ByteBuffer.allocateDirect(VoxelWallSynthesizer.IBO_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        VoxelWallSynthesizer.synthesize(frameCounter, frameCounter * 0.12f,
+                WALL_A_X, WALL_B_X, WALL_Y0, WALL_Y1, WALL_HALF_Z, vbo, ibo);
+        vbo.rewind();
+        ibo.rewind();
+        try {
+            TransientMemory tm = encoder.transientMemory();
+            streamVboSlice = tm.uploadGpu(vbo, 256L,
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+            streamIboSlice = tm.uploadGpu(ibo, 256L,
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+        } catch (RuntimeException e) {
+            LOGGER.error("[dhvk] run42 stream gate FAILED (official transient ring upload) -> mod disabled: {}",
+                    e.toString());
+            DhVkClient.disabled = true;
+            return;
+        }
+        long costUs = (System.nanoTime() - t0) / 1000L;
+        retain(STREAM_VBO_RETENTION, streamVboSlice);
+        retain(STREAM_IBO_RETENTION, streamIboSlice);
+        if (frameCounter <= STREAM_BUDGET_LOG_FRAMES) {
+            LOGGER.info("[dhvk] run42 stream budget frame={}: synth+upload={}us (VBO={}B off={}B, IBO={}B off={}B) "
+                            + "budget={}us {}",
+                    frameCounter, costUs, VoxelWallSynthesizer.VBO_BYTES, streamVboSlice.offset(),
+                    VoxelWallSynthesizer.IBO_BYTES, streamIboSlice.offset(),
+                    STREAM_BUDGET_US, costUs <= STREAM_BUDGET_US ? "OK" : "FAILED");
+        } else if (costUs > STREAM_BUDGET_US) {
+            LOGGER.error("[dhvk] run42 stream budget gate FAILED: {}us > {}us (frame={})",
+                    costUs, STREAM_BUDGET_US, frameCounter);
+        }
+    }
+
+    private static void retain(java.util.ArrayDeque<GpuBufferSlice> q, GpuBufferSlice slice) {
+        q.addLast(slice);
+        while (q.size() > STREAM_RETENTION_FRAMES) {
+            q.pollFirst();
         }
     }
 
@@ -409,14 +483,14 @@ public final class FarTerrainRenderer {
         }
         // run37 真实数据收口: 六槽每帧 = 官方 ring 本帧 slice / 墙 VBO/IBO, 全 API 方言
         // (run35-36 定谳: 驱动序列化字节 = 5090 堆槽唯一可解码格式; 偏移 0 亦活)。
-        writeUniformSlot(0, "VBO", true);
-        writeUniformSlot(1, "IBO", true);
+        long[] vbo = writeUniformSlot(0, "VBO", true);
+        long[] ibo = writeUniformSlot(1, "IBO", true);
         long[] proj = writeUniformSlot(2, "Projection", true);
         long[] dt = writeUniformSlot(3, "DynamicTransforms", true);
         long[] fog = writeUniformSlot(4, "Fog", true);
         long[] glob = writeUniformSlot(5, "Globals", true);
         if (frameCounter <= TABLE_CHECK_FRAMES) {
-            logTableCheck(proj, dt, fog, glob);
+            logTableCheck(vbo, ibo, proj, dt, fog, glob);
         }
         heap.bind(cbu, 0L, heap.sizeBytes());
     }
@@ -476,7 +550,7 @@ public final class FarTerrainRenderer {
      *  主机读回 = 设备视图)+ 官方 slice 元数据; 首帧另倒表头 128B 原始 hex
      *  + run30 六槽描述符地址对齐审计(addr % minUniformBufferOffsetAlignment)。
      *  目的: 若墙仍不可见, 日志直接给出哪一槽哪个字节不对, 不再靠推断。 */
-    private static void logTableCheck(long[] proj, long[] dt, long[] fog, long[] glob) {
+    private static void logTableCheck(long[] vbo, long[] ibo, long[] proj, long[] dt, long[] fog, long[] glob) {
         long base = heap.hostAddress();
         if (base == 0L) {
             LOGGER.warn("[dhvk] run24 table check: heap not host-visible, readback skipped");
@@ -485,13 +559,14 @@ public final class FarTerrainRenderer {
         LOGGER.info("[dhvk] run24 table check frame={} (slotStride={}B, run37 真实数据: 六槽 = 官方 ring "
                 + "本帧 slice / 墙 VBO/IBO, 全 API 方言指纹(免严格比对)):",
                 frameCounter, heap.slotStrideBytes());
-        checkSlot(0, 0, "VBO", vboDeviceAddress, vertexBuffer.size(), base, true);
-        checkSlot(0, 1, "IBO", iboDeviceAddress, indexBuffer.size(), base, true);
+        // 任务 4: VBO/IBO 槽期望 = 本帧瞬态 slice 的 (BDA+offset, len), 逐帧滚动 = 流式活证据
+        checkSlot(0, 0, "VBO", vbo == null ? -1L : vbo[0], vbo == null ? -1L : vbo[1], base, true);
+        checkSlot(0, 1, "IBO", ibo == null ? -1L : ibo[0], ibo == null ? -1L : ibo[1], base, true);
         checkSlot(1, 0, "Projection", proj == null ? -1L : proj[0], proj == null ? -1L : proj[1], base, true);
         checkSlot(1, 1, "DynamicTransforms", dt == null ? -1L : dt[0], dt == null ? -1L : dt[1], base, true);
         checkSlot(2, 0, "Fog", fog == null ? -1L : fog[0], fog == null ? -1L : fog[1], base, true);
         checkSlot(2, 1, "Globals", glob == null ? -1L : glob[0], glob == null ? -1L : glob[1], base, true);
-        for (String n : new String[] {"Projection", "DynamicTransforms", "Fog", "Globals"}) {
+        for (String n : new String[] {"VBO", "IBO", "Projection", "DynamicTransforms", "Fog", "Globals"}) {
             GpuBufferSlice s = DhVkClient.UNIFORM_SLICES.get(n);
             if (s == null) {
                 continue;
