@@ -5,6 +5,7 @@ import dev.dhvk.FarTerrainRenderer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * S0 关闭路径:官方退出序列为 Minecraft.close → RenderSystem.shutdownRenderer
@@ -15,8 +16,10 @@ import org.spongepowered.asm.mixin.injection.Inject;
 @Mixin(RenderSystem.class)
 public abstract class RenderSystemShutdownMixin {
 
+    // mixin 0.8.7: @Inject handler 即使是 void 目标也必须带 CallbackInfo 收尾参数。
+    @SuppressWarnings("UnusedMethod")
     @Inject(method = "shutdownRenderer", at = @At("HEAD"))
-    private static void dhvkDisposeFarTerrainBuffers() {
+    private static void dhvkDisposeFarTerrainBuffers(final CallbackInfo ci) {
         FarTerrainRenderer.dispose();
     }
 }
