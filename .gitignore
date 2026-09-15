@@ -1,31 +1,6 @@
-# gradle
-.gradle/
-build/
-*/build/
-out/
-
-# 原始二进制 jar(可经脚本重下,sha1 钉死在 scripts/ 里)
-mc-src/artifacts/*.jar
-mc-src/artifacts/libs/
-
-# 本地 maven 发布缓存(工作区侧)
-.local-maven/
-
-# SDD 工作区(brainstorming/plans 的 git 忽略区)
-.superpowers/
-
-# 编辑器/系统
-.idea/
-*.iml
-.vscode/*
-!.vscode/extensions.json
-.DS_Store
-*.log
-# 沙箱 HOME 只读:gradle user home 落工作区(foojay JDK/依赖缓存)
-.gradle-user-home/
-
-# 参考仓库(Caustica 等,嵌套 git 仓库不入根仓库)
-/refs/
-
-# 原版 MC 直接启动的运行目录(config/logs)
-mc-src/.vanilla-run/
+# 公开仓库(dhvk): 仅保留 mod/src(dhvk 源码+着色器), 其余全部忽略
+/*
+!/.gitignore
+!/mod/
+/mod/*
+!/mod/src/
