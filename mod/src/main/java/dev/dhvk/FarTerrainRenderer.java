@@ -28,15 +28,21 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * S0 验证渲染器:在 4000 块外画一面 16×16 彩色墙(顶点色,无光照),
+ * S0 验证渲染器:在 -X 400 / -X 2000 块各画一面 16×16 彩色墙(顶点色,无光照),
  * 走官方 26.2 帧图的一个自有 pass,共享主渲染目标的颜色+深度纹理。
+ *
+ * <p>为什么是 400/2000 而不是 4000(26.2 实测, Options.java:1470-1477):
+ * RD 滑块区间 [2,32] → 雾距 end=RD·16 ≤ 512、投影远平面
+ * depthFar=max(RD·16·4, cloudRange·16)=2048 @RD32。官方相机物理上
+ * 看不到 4000 块 —— 那是 S3 用自有远平面+边界雾要拿回的领地。
  *
  * <p>验收目标(对照 vanilla VVL 零错误基线):
  * <ol>
- *   <li>远处出现四色墙(证明超远几何经官方管线出图);</li>
- *   <li>近处山丘/地形能遮挡它(共享 reverse-Z 深度);</li>
- *   <li>RD256 下它位于雾距之内,按官方 apply_fog 出雾;</li>
- *   <li>VVL 全程零报错。</li>
+ *   <li>墙 A(-400, 雾带之前):四色全显,证明自有 pass 经官方管线出图;</li>
+ *   <li>近处山丘/地形能遮挡墙 A(共享 reverse-Z 深度);</li>
+ *   <li>墙 B(-2000, 官方 depthFar 之内、雾距之外):仍被绘制但 100% 官方雾
+ *       (远带行为:几何在官方相机内,颜色被官方 apply_fog 吞没);</li>
+ *   <li>VVL(含全开档)全程零报错。</li>
  * </ol>
  *
  * <p>机制完全照抄官方 CloudRenderer 的远物 pass 模板:
@@ -46,8 +52,19 @@ public final class FarTerrainRenderer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(FarTerrainRenderer.class);
 
-    /** 远墙中心 X 偏移(块):-X 方向 4000 块。 */
-    private static final float FAR_X = -4000.0F;
+    /**
+     * 远墙 A 的 X 偏移(块):-X 400 块。
+     * 26.2 官方相机上限(实测 Options.java:1474, RD 滑块区间 [2,32]):
+     * RD32 下雾距 end=512/start=448、投影远平面 depthFar=max(32·16·4, cloudRange·16)=2048。
+     * A 位于雾带之前 → 0% 雾,四色全显,作"出图+深度遮挡"的无歧义对照墙。
+     */
+    private static final float WALL_A_X = -400.0F;
+    /**
+     * 远墙 B 的 X 偏移(块):-X 2000 块,位于官方 depthFar(2048)之内、
+     * 官方雾距(512)之外 → 100% 官方雾,验证"超远几何仍在官方相机内出图、
+     * 被官方雾吞没"的远带行为。4000 块规格(超出官方远平面)留待 S3 自有远平面承接。
+     */
+    private static final float WALL_B_X = -2000.0F;
     /** 墙面 Y 范围(块):地面带附近,正对地平线方向。 */
     private static final float WALL_Y0 = 56.0F;
     private static final float WALL_Y1 = 72.0F;
@@ -85,7 +102,7 @@ public final class FarTerrainRenderer {
         pass.executes(FarTerrainRenderer::render);
     }
 
-    /** 单帧绘制:远墙四色三角形对(2×16 块宽 × 16 块高)。 */
+    /** 单帧绘制:两面远墙各一对四色三角形(16 块宽 × 16 块高)。 */
     public static void render() {
         ensureBuffers();
         GpuBufferSlice dynamicTransforms =
@@ -102,7 +119,7 @@ public final class FarTerrainRenderer {
             renderPass.setUniform("DynamicTransforms", dynamicTransforms);
             renderPass.setVertexBuffer(0, vertexSlice);
             renderPass.setIndexBuffer(indexBuffer, IndexType.SHORT);
-            renderPass.drawIndexed(6, 1, 0, 0, 0);
+            renderPass.drawIndexed(12, 1, 0, 0, 0);
         }
     }
 
@@ -111,17 +128,15 @@ public final class FarTerrainRenderer {
             return;
         }
 
-        // 4 个四色角点:vec3 位置(块,float32)+ vec4 颜色(RGBA8_UNORM 字节序)。
-        ByteBuffer vbo = ByteBuffer.allocateDirect(4 * (3 * 4 + 4)).order(ByteOrder.LITTLE_ENDIAN);
-        putVertex(vbo, FAR_X, WALL_Y0, -WALL_HALF_Z, 255, 0, 255); // 洋红
-        putVertex(vbo, FAR_X, WALL_Y1, -WALL_HALF_Z, 0, 255, 255); // 青
-        putVertex(vbo, FAR_X, WALL_Y1, WALL_HALF_Z, 255, 255, 0);  // 黄
-        putVertex(vbo, FAR_X, WALL_Y0, WALL_HALF_Z, 0, 255, 0);    // 绿
+        // 8 个四色角点(墙 A ×4 + 墙 B ×4):vec3 位置(块,float32)+ vec4 颜色(RGBA8_UNORM)。
+        ByteBuffer vbo = ByteBuffer.allocateDirect(8 * (3 * 4 + 4)).order(ByteOrder.LITTLE_ENDIAN);
+        putQuad(vbo, WALL_A_X);
+        putQuad(vbo, WALL_B_X);
         vbo.rewind();
 
-        ByteBuffer ibo = ByteBuffer.allocateDirect(6 * 2).order(ByteOrder.LITTLE_ENDIAN);
-        ibo.putShort((short) 0).putShort((short) 1).putShort((short) 2)
-           .putShort((short) 0).putShort((short) 2).putShort((short) 3);
+        ByteBuffer ibo = ByteBuffer.allocateDirect(12 * 2).order(ByteOrder.LITTLE_ENDIAN);
+        putQuadIndices(ibo, 0);
+        putQuadIndices(ibo, 4);
         ibo.rewind();
 
         vertexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_vbo",
@@ -130,6 +145,24 @@ public final class FarTerrainRenderer {
         indexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_ibuffer",
                 GpuBuffer.USAGE_INDEX, ibo);
         LOGGER.info("[dhvk] S0 far-terrain buffers created (vbo={}B, ibo={}B)", vbo.capacity(), ibo.capacity());
+    }
+
+    /** 一面 16×16 墙的四色角点(洋红/青/黄/绿),写入 4 个顶点。 */
+    private static void putQuad(final ByteBuffer buf, final float x) {
+        putVertex(buf, x, WALL_Y0, -WALL_HALF_Z, 255, 0, 255);  // 洋红
+        putVertex(buf, x, WALL_Y1, -WALL_HALF_Z, 0, 255, 255);  // 青
+        putVertex(buf, x, WALL_Y1, WALL_HALF_Z, 255, 255, 0);   // 黄
+        putVertex(buf, x, WALL_Y0, WALL_HALF_Z, 0, 255, 0);     // 绿
+    }
+
+    /** 一面墙的两条三角形索引(6 个 short)。 */
+    private static void putQuadIndices(final ByteBuffer buf, final int base) {
+        buf.putShort((short) base);
+        buf.putShort((short) (base + 1));
+        buf.putShort((short) (base + 2));
+        buf.putShort((short) base);
+        buf.putShort((short) (base + 2));
+        buf.putShort((short) (base + 3));
     }
 
     private static void putVertex(final ByteBuffer buf, final float x, final float y, final float z,
