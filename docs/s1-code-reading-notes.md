@@ -1048,3 +1048,39 @@ vkCmdBindResourceHeapEXT 之后、vkCmdDrawIndexed 之前) 按规格立即作废
   sudo reboot 治愈; GLFW 3.5.0 只走 X11(无 Wayland 回退、无 GLFW_PLATFORM env)→ 每次点火
   前确保显示会话健康。
 
+
+
+### run38 裁决(RD16 误触发, 非故障)
+- run38: 用户设 RD16(日志 "Changing view distance to 16, from 10") → 雾距 256 < 墙 A 400
+  → 墙 A 整段被雾吞, 不可见 = 正确行为; 探针板照旧活(绯红/纯蓝)。
+- 收束: 绿线裁决严格需 RD32(雾距 512 > 400), 滑杆拉不满则墙 A 永远藏在雾后。
+
+### run39 裁决(绿线目视通过, 默认档 VVL)
+- 日志 19:04:20 "Changing view distance to 32, from 16" → 截图时刻 RD32 在位。
+- 用户截图: 墙 A(x=-400, 16×16 四色小方块)清晰悬于雾线之前(400<512, 零雾污染,
+  四角四色); 墙 B(x=-2000)被雾整吞, 地平线无伪影; 探针板活(绯红/纯蓝)。
+- VVL 默认档零报错(0 validation messages) → **绿线目视裁决: 通过**。
+
+### run40 裁决(全 profile VVL, 最后闸门)
+- 全 profile = mc-src/scripts/vvl-fullprofile/(vk_layer_settings.txt: sync + GPU-assisted
+  + best practices 三件套, VVL 1.4.341 enables 机制; S0 已验证该配置档有效)。
+- 用户截图(在场约 60s, 三次暂停转视角): 墙 A 远方可见**且被地形/树木正确遮挡**(深度
+  测试工作, 用户原话"看到远方的墙了可以被地形遮挡"); 探针板活; 干净退出(exit 0)。
+- VVL 全档零报错(0 validation messages)。
+
+### 任务 2 基线 diff + 验收裁决(2026-09-15 夜, 收口)
+- 三零对齐: vanilla 基线(docs/baselines/console-baseline-2026-09-15.txt, 默认档) = 0 VVL
+  消息; run39(mod, 默认档) = 0; run40(mod, 全档) = 0。
+- 控制台 diff(vs 基线):
+  | 项 | 基线 | run40 | 判读 |
+  |---|---|---|---|
+  | VVL 消息 | 0 | 0 | 闸门通过(默认档 + 全档双零) |
+  | 设备扩展 | 10 | 13 | +descriptor_heap +maintenance5 +buffer_device_address = mod 设备手术 mixin 有意增量(VulkanBackendDeviceSurgeryMixin) |
+  | swapchain out of date WARN | 0 | 1 | 瞬态暂停/恢复事件(用户连续 3 次暂停截图), 自愈, VVL 零佐证 |
+  | 401/Realms 离线, icon, Missing sound | 有 | 有 | 双方共有无害行(离线启动预期) |
+- **验收: S1 任务 2(descriptor heap 核心 + 双墙几何堆源描述符化)硬闸门全绿** ——
+  机制三钉子(run32-36: 驱动方言唯一解 / KHR push 名册取消 / 偏移 0 无碍)+ 真实数据
+  端到端(run37)+ 绿线目视(run39/40: 墙 A 四色雾前可见 + 地形遮挡, 墙 B 雾吞无伪影)
+  + VVL 双档零报错(run39/40 vs 基线)→ **任务 2 收口**。
+- S1 余程: VRS + 合成 ring 流式(+1ms 预算)等后续闸门。
+
