@@ -34,6 +34,7 @@
 
 日志:logs/s2-run-step1-204238.log / s2-run2-step1-204901.log /
 s2-run3-step1-205416.log / s2-run4-step1-full-205748.log
+(原始 .log 按仓库契约留私有工作区,.gitignore 不收;公开仓保留本报告 + 代码)
 
 ## 关键裁决与偏差(相对规格 §2 设计)
 

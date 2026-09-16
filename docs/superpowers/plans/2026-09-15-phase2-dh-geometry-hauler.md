@@ -312,7 +312,7 @@ LGPL-3.0；**支持 MC 26.2**，与我们同代代）的核心机制与我们方
   ndcz 重推导焊进 S2，S3 只留打磨）；步骤 1 任务 0 勘察收口：秒表机制裁决
   = 官方 timeline semaphore 搭车 + 官方公开 `writeTimestamp`/`createTimestampQueryPool`
   （见 `docs/s2-code-reading-notes.md` §1~§2）；
-- S2 步骤 1（GPU 秒表）✅ 闭合 @`9a13f58`（run1-4：机制全链通 + VVL 标准档/全开档
+- S2 步骤 1（GPU 秒表）✅ 闭合 @`68278e1`（run1-4：机制全链通 + VVL 标准档/全开档
   双零 + 目视"还是 S1 那张脸"用户裁决 + 干净退出；自校准 ≈1GHz/tick（NVIDIA 5090
   驱动自报 period=1/validBits=64 为名义值，vulkaninfo 对拍）→ far pass 实测
   6~21µs（1ms 门下富余 50~120 倍）；验收报告
