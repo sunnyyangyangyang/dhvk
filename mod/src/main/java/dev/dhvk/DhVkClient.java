@@ -66,6 +66,18 @@ public final class DhVkClient implements ClientModInitializer {
         return !"0".equals(System.getenv("DHVK_VRS"));
     }
 
+    /** S1 任务 4 目验收口 A/B 因子: DHVK_NOWALL=1 → far_terrain pass 整个不挂
+     *  (墙与探针色板全消失, 画面回到官方原生观感, 用于裁定"屏上到底是谁的")。默认开。 */
+    public static boolean wallEnvOn() {
+        return !"1".equals(System.getenv("DHVK_NOWALL"));
+    }
+
+    /** S1 任务 4 目验收口 A/B 因子: DHVK_NOPROBE=1 → 只绘墙, 不绘 NDC 钉死的探针色板
+     *  (墙与探针分离, 用于裁定"糊在镜头上的薄片"的归属)。默认开。 */
+    public static boolean probeEnvOn() {
+        return !"1".equals(System.getenv("DHVK_NOPROBE"));
+    }
+
     /** run20: VkShaderDescriptorSetAndBindingMappingInfoEXT 节点指针(native heap 永生, 0 = 尚未建)。
      *  由 ensureHeapSurgery 建好并置位; 管线销毁晚于我们的 dispose, 节点不回收。 */
     public static volatile long mappingInfoNode = 0L;
@@ -112,6 +124,9 @@ public final class DhVkClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("[dhvk] client entrypoint initialized (mc 26.2, fabric)");
+        LOGGER.info("[dhvk] far_terrain gate: wall={}, probe={} (DHVK_NOWALL={}, DHVK_NOPROBE={})",
+                wallEnvOn(), probeEnvOn(),
+                System.getenv("DHVK_NOWALL"), System.getenv("DHVK_NOPROBE"));
         LOGGER.info("[dhvk] vk handles: {} (capture 在设备创建时刻, 首帧前必就绪)", VkHandles.format());
     }
 

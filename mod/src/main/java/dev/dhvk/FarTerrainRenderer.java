@@ -78,7 +78,7 @@ public final class FarTerrainRenderer {
      * RD32 下雾距 end=512/start=448、投影远平面 depthFar=max(32·16·4, cloudRange·16)=2048。
      * A 位于雾带之前 → 0% 雾,四色全显,作"出图+深度遮挡"的无歧义对照墙。
      */
-    private static final float WALL_A_X = -400.0F;
+    private static final float WALL_A_X = -100.0F; // run47 目验收口: 拉近至 100 块(幕布级不可错过); 验收后按超远规格回 -400
     /**
      * 远墙 B 的 X 偏移(块):-X 2000 块,位于官方 depthFar(2048)之内、
      * 官方雾距(512)之外 → 100% 官方雾,验证"超远几何仍在官方相机内出图、
@@ -311,7 +311,7 @@ public final class FarTerrainRenderer {
 
     /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。mod 自禁用时不挂 pass。 */
     public static void attach(final FrameGraphBuilder frame, final LevelTargetBundle targets) {
-        if (DhVkClient.disabled) {
+        if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
             return;
         }
         FramePass pass = frame.addPass("far_terrain");
@@ -390,12 +390,17 @@ public final class FarTerrainRenderer {
             dhvkBindHeap(encoder);
             int firstIndex = (int) (streamIboSlice.offset() * 2L);
             renderPass.drawIndexed(VoxelWallSynthesizer.TOTAL_INDICES, 1, firstIndex, 0, 0);
-            // run28: 探针二绘(顶点/索引绑定沿主管线, 堆状态沿用; 探针 layout 同名 uniform
-            // 已由主管线 setUniform 记录 → 其 pushDescriptors 推同款 classic 描述符)。
-            // NDC 钉死 + 深度恒过 → 无论矩阵健康与否, 两块色板必现屏; RGB = ModelViewMat
-            // 行0 原始值(GPU 侧堆读真值), 与 CPU truth 日志对拍裁决 UBO 静态映射抓取。
-            renderPass.setPipeline(PIPELINE_PROBE);
-            renderPass.drawIndexed(12, 1, firstIndex, 0, 0);
+            // run28: 探针二绘。NDC 钉死 + 深度恒过 → 无论矩阵健康与否, 色板必现屏;
+            // RGB = ModelViewMat 行0 原始值(GPU 侧堆读真值), 与 CPU truth 日志对拍。
+            // run47 修复: 探针换回自有静态 S0 缓冲(NDC 顶点) —— 任务 4 起若沿用主管线的
+            // 流式 VBO, 墙的世界坐标被 NDC 探针当屏幕坐标 → 糊在镜头上闪烁的薄片即此。
+            // run49 A/B 因子: DHVK_NOPROBE=1 时探针整段不绘(只留墙), 裁定薄片归属。
+            if (DhVkClient.probeEnvOn()) {
+                renderPass.setVertexBuffer(0, vertexBuffer.slice());
+                renderPass.setIndexBuffer(indexBuffer, IndexType.SHORT);
+                renderPass.setPipeline(PIPELINE_PROBE);
+                renderPass.drawIndexed(12, 1, 0, 0, 0);
+            }
         } finally {
             DhVkClient.uniformCaptureArmed = false;
         }
