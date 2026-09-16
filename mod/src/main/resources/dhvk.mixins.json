@@ -16,7 +16,8 @@
     "ClientPackSourceDevResourcesMixin",
     "RenderSystemShutdownMixin",
     "VulkanRenderPassPushCancelMixin",
-    "VulkanTransientMemorySurgeryMixin"
+    "VulkanTransientMemorySurgeryMixin",
+    "VulkanQueryPoolProbeMixin"
   ],
   "injectors": {
     "defaultRequire": 1

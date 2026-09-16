@@ -256,6 +256,8 @@ public final class FarTerrainRenderer {
      * (DEVICE.close 之前),幂等。
      */
     public static synchronized void dispose() {
+        // S2 步骤 1: 秒表查询池(device 子对象)—— vkDestroyDevice 之前释放(S0/S1 纪律)
+        FarPassStopwatch.dispose();
         if (vertexBuffer != null) {
             vertexBuffer.close();
             vertexBuffer = null;
@@ -339,6 +341,9 @@ public final class FarTerrainRenderer {
         }
         frameCounter++;
         run30LogDeviceFacts();
+        // S2 步骤 1: GPU 秒表 —— 先非阻塞读回上一帧 far pass 代价(零 CBU),再开始本帧录制
+        CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+        FarPassStopwatch.readBack((DhvkCommandEncoder) (Object) encoder);
         // run20: 强制 PIPELINE 的首次编译发生在手术窗口内(静态堆 mapping + flags2 描述符堆位,
         // 官方 pipelineCache 缓存首次结果, 后续每帧 setPipeline 全部命中手术过的管线)
         ensureHeapSurgery();
@@ -360,7 +365,6 @@ public final class FarTerrainRenderer {
         GpuTextureView depthView = mainTarget.getDepthTextureView();
         // S1 任务 2: wrapper 即堆绑定的发射点(笔记 §2); CBU 经 DhvkCommandEncoder
         // 探针接口读取(官方 wrapper 的 backend 访问器是 protected, mod 侧不可见)
-        CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         // run22 捕获窗: pass 建立后张开, dhvkBindHeap 之后关闭(render 线程单线程, 无竞态);
         // 窗内 setUniform 由 RenderPassUniformProbeMixin 记入 DhVkClient.uniformSlices
         DhVkClient.uniformCaptureArmed = true;
@@ -373,6 +377,8 @@ public final class FarTerrainRenderer {
         }
         try (RenderPass renderPass = encoder.createRenderPass(
                 () -> "FarTerrain", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
+            // S2 步骤 1: 秒表起始(slot 0) —— 与官方 pass 录制同一 CBU(s2 笔记 §2)
+            FarPassStopwatch.emitStart((DhvkCommandEncoder) (Object) encoder);
             // 主管线(DEFAULT 纯写入)绘双墙; 几何经堆源描述符(cell 0, 任务 4 起 = 本帧瞬态
             // slice 的 BDA), uniform 经每帧堆表重写。
             renderPass.setPipeline(PIPELINE);
@@ -401,6 +407,8 @@ public final class FarTerrainRenderer {
                 renderPass.setPipeline(PIPELINE_PROBE);
                 renderPass.drawIndexed(12, 1, 0, 0, 0);
             }
+            // S2 步骤 1: 秒表终止(slot 1) —— 最后一次 draw 之后、pass close 之前
+            FarPassStopwatch.emitEnd((DhvkCommandEncoder) (Object) encoder);
         } finally {
             DhVkClient.uniformCaptureArmed = false;
         }
@@ -761,6 +769,8 @@ public final class FarTerrainRenderer {
             LOGGER.info("[dhvk] far-terrain buffers skipped: mod disabled by device gate");
             return;
         }
+        // S2 步骤 1: 秒表 init(官方工厂查询池, 只建一次; DHVK_NOTICK=1 → 零足迹)
+        FarPassStopwatch.ensureCreated();
 
         // 8 个四色角点(墙 A ×4 + 墙 B ×4):vec3 位置(块,float32)+ vec4 颜色(RGBA8_UNORM)。
         ByteBuffer vbo = ByteBuffer.allocateDirect(8 * (3 * 4 + 4)).order(ByteOrder.LITTLE_ENDIAN);
