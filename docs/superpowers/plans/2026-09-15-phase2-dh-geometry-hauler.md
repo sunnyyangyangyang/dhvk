@@ -325,3 +325,4 @@ LGPL-3.0；**支持 MC 26.2**，与我们同代代）的核心机制与我们方
   驱动自报 period=1/validBits=64 为名义值，vulkaninfo 对拍）→ far pass 实测
   6~21µs（1ms 门下富余 50~120 倍）；验收报告
   `docs/s2-acceptance/step1-gpu-stopwatch.md`，日志 `docs/s2-acceptance/logs/`）。
+- S2 规格 v2 pivot 定稿 @`dc9216e`（2026-09-16 用户四裁决：S4 范围 = 留门 + 出货口 / 高度场退役 / 贴图 + AO 焊进 S2 / "少碰不碰原版渲染，我们只做几何搬运工"）：`docs/superpowers/specs/2026-09-16-greedy-mesh-pivot-design.md`；S2 v1 规格保留为机制基线 + 历史；修订版 S2 步骤序 = 任务0' 读码补账 + 接口壳 → 贪心 spike（R-e/R-c 裁决）→ 体素阶梯 → 贴图/UV → 烘焙 AO → 遮挡剔除 → VRS rate map → 远平面三件套 10km 总闸门；S2 步骤2 代码未动（转型成本最低窗口，用户原话）。
