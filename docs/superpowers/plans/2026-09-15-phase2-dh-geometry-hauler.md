@@ -301,3 +301,14 @@ LGPL-3.0；**支持 MC 26.2**，与我们同代代）的核心机制与我们方
 3. 每片代码进 `mod/`（fabric-loom 脚手架已备），shader 走
    `mod/scripts/compile-spirv.sh`（glslang 16.2.0 宿主已装）；
 4. 全程 `todo_write` 切片进度跟踪；文档随片更新本文件（验收结果回填）。
+
+**当前状态（2026-09-15 回填）**：
+- S0 验收通过 @`94853f7`（标准档 + 全开档 VVL 零报错）；
+- S1 全部闭合 @`4bd9acc`（run45-50 目验裁决；heap 载体 / VRS / 硬门槛 / 全带流式
+  闸门全过；"超远 -400 正面远观"与全带剪影视觉由 S2 承接）；
+- S2 规格已定稿：`docs/superpowers/specs/2026-09-15-s2-lod-ladder-design.md`
+  （用户 2026-09-15 裁定：五件顺序 秒表→LOD 阶梯→遮挡剔除→VRS rate map→
+  远平面三件套，每件独立闸门；S2/S3 边界 = A：远平面 hook + fog end 扩展 +
+  ndcz 重推导焊进 S2，S3 只留打磨）；步骤 1 任务 0 勘察收口：秒表机制裁决
+  = 官方 timeline semaphore 搭车 + 官方公开 `writeTimestamp`/`createTimestampQueryPool`
+  （见 `docs/s2-code-reading-notes.md` §1~§2）。
