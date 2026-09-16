@@ -199,6 +199,14 @@ Distant Horizons 的内核：**世界按 32×32×32 world-section 网格划分�
 
 ### S4 — Voxy 式 GPU 体素 mesher（正主）+ Caustica RTAS 出货口（后置，~1 周起步，另立计划）
 
+> **2026-09-16 pivot 裁定（重定义）**：本章"Voxy 式 **GPU** 体素 mesher"为对 Voxy 真实架构的
+> 误读（其网格化 = CPU 多线程**二进制贪心**，GPU 只驱动渲染侧；用户 2026-09-16 下载汇总核实，
+> 要点已摘录进规格）。S4 重定义为 **留门 + 出货口**：① `CellMeshExtractor` 第三实现位
+> （GPU compute / shader enqueue，只冻 seam 不写码）② Caustica RTAS 出货口经
+> `CellGeometryObserver`（登记接口，不研究 BLAS）。"真体素几何"正主提前至 S2 修订
+> （CPU 贪心 + 真贴图 + 烘焙 AO，高度场退役）。下方原纲要保留作历史；R-a~R-f 红线表由
+> 规格 §5 v2 取代。全文：`docs/superpowers/specs/2026-09-16-greedy-mesh-pivot-design.md`。
+
 **定位（2026-09-15 用户定调："这才是我想要的 voxel 的办法，类似 Voxy"）**：
 S1~S3 的格阵高度场是**冷启动**——先让传送带跑通、让 heap 表立起来、让数据
 地基（block tile + 注册表 + arena）就位；S4 把几何生产者从"CPU 高度场提取"
