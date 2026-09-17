@@ -428,6 +428,8 @@ public final class FarTerrainRenderer {
         if ("1".equals(System.getenv("DHVK_NOSTAGE"))) {
             return;
         }
+        // run111: 裸上传通道就绪 (专属 pool/fence; 与官方瞬态 ring 零接触)
+        DhVkRawUploader.ensureReady();
         final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         ensureBuffers();
         if (DhVkClient.disabled) {
@@ -515,8 +517,20 @@ public final class FarTerrainRenderer {
         putFanCorner(bb, 1.0f, 1.0f);
         putFanCorner(bb, -1.0f, 1.0f);
         bb.rewind();
-        return RenderSystem.getDevice().createBuffer(
-                () -> "dhvk/apply_fan_vbo", GpuBuffer.USAGE_VERTEX | bda(), bb);
+        return createStagedBuffer("dhvk/apply_fan_vbo", GpuBuffer.USAGE_VERTEX | bda(), bb);
+    }
+
+    /**
+     * run111: 持久缓冲创建 = 尺寸创建 + 裸 vkCmdUpdateBuffer 上传 (与官方瞬态 ring 零接触)。
+     * DHVK_RINGSTAGE=1 回退旧 ring 路径 (A/B 对照用)。
+     */
+    private static GpuBuffer createStagedBuffer(final String label, final int usage, final java.nio.ByteBuffer data) {
+        if ("1".equals(System.getenv("DHVK_RINGSTAGE"))) {
+            return RenderSystem.getDevice().createBuffer(() -> label, usage, data);
+        }
+        final GpuBuffer buffer = RenderSystem.getDevice().createBuffer(() -> label, usage, (long) data.remaining());
+        DhVkRawUploader.upload(buffer, data);
+        return buffer;
     }
 
     /** 扇角顶点写入: Position(x, y, 0) + 白色。 */
@@ -777,9 +791,9 @@ public final class FarTerrainRenderer {
             vbo0.put(meshVbo).rewind();
             ByteBuffer ibo0 = ByteBuffer.allocateDirect(meshIbo.length).order(ByteOrder.LITTLE_ENDIAN);
             ibo0.put(meshIbo).rewind();
-            meshVboBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/mesh_vbo",
+            meshVboBuffer = createStagedBuffer("dhvk/mesh_vbo",
                     GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vbo0);
-            meshIboBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/mesh_ibuffer",
+            meshIboBuffer = createStagedBuffer("dhvk/mesh_ibuffer",
                     GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), ibo0);
             LOGGER.info("[dhvk] run82 mesh persistent buffers: VBO={}B IBO={}B (static, 脱离瞬态ring)",
                     meshVbo.length, meshIbo.length);
@@ -1396,13 +1410,11 @@ public final class FarTerrainRenderer {
         // run13 根因 ②: 堆描述符 payload = 本缓冲的设备地址 → vkGetBufferDeviceAddress 要求
         // usage 带设备地址位(2026 值空间 = SHADER_DEVICE_ADDRESS, 经 VulkanConstBdaUsageMixin
         // 从 DEVICE_ADDRESS 标记位折算) + DEVICE_ADDRESS 内存(VMA 自动), 三要素齐备方合法
-        vertexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_vbo",
-                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(),
-                vbo);
+        vertexBuffer = createStagedBuffer("dhvk/far_terrain_vbo",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vbo);
         vertexSlice = vertexBuffer.slice();
-        indexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_ibuffer",
-                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(),
-                ibo);
+        indexBuffer = createStagedBuffer("dhvk/far_terrain_ibuffer",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), ibo);
         LOGGER.info("[dhvk] S0 far-terrain buffers created (vbo={}B, ibo={}B)", vbo.capacity(), ibo.capacity());
 
         // run26 双半屏仲裁:左半=墙 A 侧四顶点(纯色, probe2 VS 按 (y,z) 符号钉左半屏),
@@ -1420,15 +1432,15 @@ public final class FarTerrainRenderer {
         putQuadIndices(iboR, 0);
         iboR.rewind();
 
-        vertexBufferL = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_vboL",
+        vertexBufferL = createStagedBuffer("dhvk/far_terrain_probe2_vboL",
                 GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vboL);
         vertexSliceL = vertexBufferL.slice();
-        indexBufferL = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_ibufferL",
+        indexBufferL = createStagedBuffer("dhvk/far_terrain_probe2_ibufferL",
                 GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), iboL);
-        vertexBufferR = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_vboR",
+        vertexBufferR = createStagedBuffer("dhvk/far_terrain_probe2_vboR",
                 GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vboR);
         vertexSliceR = vertexBufferR.slice();
-        indexBufferR = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_ibufferR",
+        indexBufferR = createStagedBuffer("dhvk/far_terrain_probe2_ibufferR",
                 GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), iboR);
         LOGGER.info("[dhvk] run26 probe2 buffers created (halves: vbo=64B x2, ibo=12B x2)");
 
@@ -1479,7 +1491,7 @@ public final class FarTerrainRenderer {
                 }
             }
             sentinel.rewind();
-            sentinelBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_sentinel",
+            sentinelBuffer = createStagedBuffer("dhvk/far_terrain_sentinel",
                     GpuBuffer.USAGE_UNIFORM | bda(), sentinel);
             sentinelBase = bdaAddress2(((VulkanGpuBuffer) sentinelBuffer).vkBuffer());
             for (int i = 0; i < 6; i++) {
