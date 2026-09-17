@@ -490,15 +490,19 @@ public final class FarTerrainRenderer {
     private static GpuBuffer createFanVbo() {
         java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(4 * 16)
                 .order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        float[][] verts = {{-1.0f, -1.0f, 0.0f}, {1.0f, -1.0f, 0.0f},
-                {1.0f, 1.0f, 0.0f}, {-1.0f, 1.0f, 0.0f}};
-        for (float[] v : verts) {
-            bb.putFloat(v[0]).putFloat(v[1]).putFloat(v[2]);
-            bb.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
-        }
+        putFanCorner(bb, -1.0f, -1.0f);
+        putFanCorner(bb, 1.0f, -1.0f);
+        putFanCorner(bb, 1.0f, 1.0f);
+        putFanCorner(bb, -1.0f, 1.0f);
         bb.rewind();
         return RenderSystem.getDevice().createBuffer(
                 () -> "dhvk/apply_fan_vbo", GpuBuffer.USAGE_VERTEX | bda(), bb);
+    }
+
+    /** 扇角顶点写入: Position(x, y, 0) + 白色。 */
+    private static void putFanCorner(final java.nio.ByteBuffer bb, final float x, final float y) {
+        bb.putFloat(x).putFloat(y).putFloat(0.0f);
+        bb.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
     }
 
     /** run30 对齐/事实采集帧。run29 哨兵全黑 = GPU 读到的描述符是零 —— 既非活体重读

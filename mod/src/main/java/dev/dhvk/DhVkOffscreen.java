@@ -1,19 +1,18 @@
 package dev.dhvk;
 
 import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.GpuDevice;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import java.util.OptionalDouble;
 import org.joml.Vector4f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.OptionalDouble;
 
 /**
  * S2 离屏目标对 (DH 式移植): 颜色 RGBA8_UNORM + 深度 D32_FLOAT, 与主视口同尺寸,
