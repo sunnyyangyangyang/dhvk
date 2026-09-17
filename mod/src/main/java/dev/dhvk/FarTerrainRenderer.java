@@ -473,6 +473,7 @@ public final class FarTerrainRenderer {
             bb.putFloat(v[0]).putFloat(v[1]).putFloat(v[2]);
             bb.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
         }
+        bb.rewind();
         return RenderSystem.getDevice().createBuffer(
                 () -> "dhvk/apply_fan_vbo", GpuBuffer.USAGE_VERTEX | bda(), bb);
     }
