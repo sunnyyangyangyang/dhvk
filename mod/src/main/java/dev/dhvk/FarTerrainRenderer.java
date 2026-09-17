@@ -767,8 +767,13 @@ public final class FarTerrainRenderer {
             // 移植态信标: 静态四边形不读 chunk, 跳过带区就绪门直接构建
             if (!DhVkClient.beaconOn() && !bandRegionReady(minecraft)) {
                 // 带区 chunk 未加载齐(生成/流送中) → 本帧只出 head 顶点(探针哨兵活体), 构建顺延
-                if (meshWaitFrames == 0 || meshWaitFrames % 60 == 0) {
-                    LOGGER.info("[dhvk] s2v2 mesh band deferred: r256 探针未齐, waitFrames={}", meshWaitFrames);
+                if (meshWaitFrames == 0 || meshWaitFrames % 300 == 0) {
+                    final double[] center = effectiveMeshCenter(minecraft);
+                    final double px = minecraft.player.position().x();
+                    final double pz = minecraft.player.position().z();
+                    LOGGER.info("[dhvk] s2v2 mesh band deferred: r256 探针未齐 waitFrames={} 中心=({}, {}) "
+                                    + "玩家=({}, {}) 渲染距离见F3, DHVK_BANDFORCE=1 可绕过",
+                            meshWaitFrames, (long) center[0], (long) center[1], (long) px, (long) pz);
                 }
                 meshWaitFrames++;
             } else {
@@ -1031,7 +1036,15 @@ public final class FarTerrainRenderer {
      * 钉带模式(步13, DHVK_MESH_AT)探针绕带中心: 玩家尚在出生点时门槛自动顺延,
      * 与玩家到位自同步, 杜绝出生点亮绿灯→带区全未加载→空带。
      */
+    /** 君口令门: DHVK_BANDFORCE=1 绕过带区就绪门直接构建 (视效冒烟用, 未加载区块贡献空气轮廓)。 */
+    static boolean bandForceOn() {
+        return "1".equals(System.getenv("DHVK_BANDFORCE"));
+    }
+
     private static boolean bandRegionReady(Minecraft minecraft) {
+        if (bandForceOn()) {
+            return true;
+        }
         double[] center = effectiveMeshCenter(minecraft);
         double px = center[0];
         double pz = center[1];
