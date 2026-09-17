@@ -123,6 +123,12 @@ public final class DhVkClient implements ClientModInitializer {
         return "1".equals(System.getenv("DHVK_OLDPASS"));
     }
 
+    /** run91 信标墙: DHVK_BEACON=1 → 跳过体素带, 建一面巨大纯红双面石碑 (观景点正北),
+     *  彻底解决"巨墙找不到" —— 176 宽 × 280 高, 抬头即见。 */
+    public static boolean beaconOn() {
+        return "1".equals(System.getenv("DHVK_BEACON"));
+    }
+
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
      *  用途: 出生点与目验目标 chunk 不一致时钉住 tile 带。 */
     public static String meshAt() {

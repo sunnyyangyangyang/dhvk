@@ -776,6 +776,31 @@ public final class FarTerrainRenderer {
      * color ubyte4 = 官方 POSITION_COLOR 形）+ u32 顺序 IBO。
      */
     private static void buildMeshBand(Minecraft minecraft) {
+        // run91 信标墙: DHVK_BEACON=1 → 跳过全部 tile 几何, 直接建一面巨大纯红双面石碑:
+        // 176(x1571..1747) × 280(y40..320), z=248 平面, 观景点 (1648,130,336) 正北 88 块。
+        // cull off 双面可见; /tp 1648 130 336 朝北(-z)即正对碑面。
+        if (DhVkClient.beaconOn()) {
+            float z = 248.0f;
+            float x0 = 1571.0f, x1 = 1747.0f;
+            float y0 = 40.0f, y1 = 320.0f;
+            byte[] vb = new byte[4 * 16];
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(vb).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            float[][] corners = {{x0, y0, z}, {x0, y1, z}, {x1, y1, z}, {x1, y0, z}};
+            for (float[] v : corners) {
+                b.putFloat(v[0]).putFloat(v[1]).putFloat(v[2]);
+                b.put((byte) 255).put((byte) 0).put((byte) 0).put((byte) 255);
+            }
+            meshVbo = vb;
+            java.nio.ByteBuffer ib = java.nio.ByteBuffer.allocate(6 * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            for (int i : new int[]{0, 1, 2, 0, 2, 3}) {
+                ib.putInt(i);
+            }
+            meshIbo = ib.array();
+            meshIndexCount = 6;
+            LOGGER.info("[dhvk] beacon wall: x[{},{}] z={} y[{},{}] 纯红 176x280 石碑, 观景点 (1648,130,336) 正北 88 块 — /tp 1648 130 336 朝北(-z)即正对碑面",
+                    x0, x1, z, y0, y1);
+            return;
+        }
         LevelBlockSource source = new LevelBlockSource(minecraft.level,
                 minecraft.getModelManager().getBlockStateModelSet());
         MapTileTable table = new MapTileTable();
