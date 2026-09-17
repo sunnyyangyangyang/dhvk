@@ -493,13 +493,19 @@ public final class FarTerrainRenderer {
         }
     }
 
-    /** S3 合成扇 → 主目标: 只把离屏深度有效(画到)的像素贴回场景。 */
+    /**
+     * S3 合成扇 → 主目标: 只把离屏深度有效(画到)的像素贴回场景。
+     * run116: 附主目标深度视图 (颜色+深度同场景 pass 同构) — run113/115 的 NVIDIA Xid109/31
+     * (隐式布局转换死锁) 判为颜色-only 声明与场景 pass 收尾布局不一致所致; 同构附件集免转换。
+     */
     private static void renderFanPass(final CommandEncoder encoder, final RenderTarget mainTarget) {
         offscreen.ensureSampler();
         try (RenderPass apply = encoder.createRenderPass(
                 () -> "dhvk:far_apply",
                 mainTarget.getColorTextureView(),
-                java.util.Optional.empty())) {
+                java.util.Optional.empty(),
+                mainTarget.getDepthTextureView(),
+                java.util.OptionalDouble.empty())) {
             apply.setPipeline(PIPELINE_APPLY);
             apply.bindTexture("uSourceColorTexture", offscreen.colorView(), offscreen.ensureSampler());
             apply.bindTexture("uSourceDepthTexture", offscreen.depthView(), offscreen.ensureSampler());
