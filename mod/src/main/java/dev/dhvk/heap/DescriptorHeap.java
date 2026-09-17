@@ -106,6 +106,10 @@ public final class DescriptorHeap implements AutoCloseable {
             this.descSize = hp.bufferDescriptorSize();
             long maxResourceHeapSize = hp.maxResourceHeapSize();
             long resourceHeapAlignment = hp.resourceHeapAlignment();
+            // S2v2 任务0' 唯一新代码: 设备堆属性无条件入日志(32MiB 硬上限 = pivot 几何驻留约束源, 笔记 §10.3)
+            LOGGER.info("[dhvk] heap props: maxResourceHeapSize={}B reserved={}B align={}B bufAlign={}B descSize={}B",
+                    maxResourceHeapSize, hp.minResourceHeapReservedRange(),
+                    resourceHeapAlignment, bufDescAlignment, this.descSize);
             // 2) 预算(R4: 超 maxResourceHeapSize → 降 cell 容量并 log)
             // run20: 堆分配必须包含驱动预留区(VkBindHeapInfoEXT.reservedRangeSize 下限
             // minResourceHeapReservedRange, run19 实证 VUID-pBindInfo-11233 报 96768B) →
