@@ -458,6 +458,12 @@ public final class FarTerrainRenderer {
      *  （S0 哨兵语义不变：堆健康 → 位移 0；堆失效 → 几何整体跳 +400）；IBO 头 6 项全 0。 */
     private static byte[] meshVbo;
     private static byte[] meshIbo;
+    /** run82: 带几何驻留持久缓冲(内容静态, 建一次用到底)。瞬态 ring 与官方系统共享,
+     *  官方流式上传会复用我们 in-flight slice 的环区(分配器只等本 encoder 的 submit
+     *  排空, 跨 encoder in-flight 无互斥) → 3.2MB 大靶子被地形字节糊掉 = run81 左板
+     *  闪烁/纸片消失(S1 时代 30KB 小靶子+同内容重传, 糊了也看不见)。静态缓冲 BDA 恒定。 */
+    private static GpuBuffer meshVboBuffer;
+    private static GpuBuffer meshIboBuffer;
     private static boolean meshBuilt;
     private static int meshVertCount;
     private static int meshIndexCount = 6;
@@ -560,21 +566,41 @@ public final class FarTerrainRenderer {
             }
         }
         long t0 = System.nanoTime();
-        ByteBuffer vbo = ByteBuffer.allocateDirect(meshVbo.length).order(ByteOrder.LITTLE_ENDIAN);
-        vbo.put(meshVbo).rewind();
-        ByteBuffer ibo = ByteBuffer.allocateDirect(meshIbo.length).order(ByteOrder.LITTLE_ENDIAN);
-        ibo.put(meshIbo).rewind();
-        try {
-            TransientMemory tm = encoder.transientMemory();
-            streamVboSlice = tm.uploadGpu(vbo, 256L,
-                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
-            streamIboSlice = tm.uploadGpu(ibo, 256L,
-                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
-        } catch (RuntimeException e) {
-            LOGGER.error("[dhvk] s2v2 mesh stream gate FAILED (official transient ring upload) -> mod disabled: {}",
-                    e.toString());
-            DhVkClient.disabled = true;
-            return;
+        if (meshBuilt && meshVboBuffer != null) {
+            // run82: 持久缓冲直取 slice(偏移 0, BDA 恒定, 堆表重写幂等)
+            streamVboSlice = meshVboBuffer.slice();
+            streamIboSlice = meshIboBuffer.slice();
+        } else if (meshBuilt) {
+            // run82: 首次构建后建持久缓冲 —— 带内容静态, 脱离与官方系统共享的瞬态 ring
+            ByteBuffer vbo0 = ByteBuffer.allocateDirect(meshVbo.length).order(ByteOrder.LITTLE_ENDIAN);
+            vbo0.put(meshVbo).rewind();
+            ByteBuffer ibo0 = ByteBuffer.allocateDirect(meshIbo.length).order(ByteOrder.LITTLE_ENDIAN);
+            ibo0.put(meshIbo).rewind();
+            meshVboBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/mesh_vbo",
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, vbo0);
+            meshIboBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/mesh_ibuffer",
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, ibo0);
+            LOGGER.info("[dhvk] run82 mesh persistent buffers: VBO={}B IBO={}B (static, 脱离瞬态ring)",
+                    meshVbo.length, meshIbo.length);
+            streamVboSlice = meshVboBuffer.slice();
+            streamIboSlice = meshIboBuffer.slice();
+        } else {
+            ByteBuffer vbo = ByteBuffer.allocateDirect(meshVbo.length).order(ByteOrder.LITTLE_ENDIAN);
+            vbo.put(meshVbo).rewind();
+            ByteBuffer ibo = ByteBuffer.allocateDirect(meshIbo.length).order(ByteOrder.LITTLE_ENDIAN);
+            ibo.put(meshIbo).rewind();
+            try {
+                TransientMemory tm = encoder.transientMemory();
+                streamVboSlice = tm.uploadGpu(vbo, 256L,
+                        GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+                streamIboSlice = tm.uploadGpu(ibo, 256L,
+                        GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+            } catch (RuntimeException e) {
+                LOGGER.error("[dhvk] s2v2 mesh stream gate FAILED (official transient ring upload) -> mod disabled: {}",
+                        e.toString());
+                DhVkClient.disabled = true;
+                return;
+            }
         }
         retain(STREAM_VBO_RETENTION, streamVboSlice);
         retain(STREAM_IBO_RETENTION, streamIboSlice);
