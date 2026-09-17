@@ -33,7 +33,8 @@ void main() {
     // run80 判读: 左板 R=VBO槽活(头==-400) G=IBO槽活(头==0且首索引==1) B=VBO内容真(首顶点x∈带域)
     //   三通道全亮 = GPU 经堆描述符真读到本帧带 slice; 任一暗 = 断点即该通道。
     float v0 = (abs(u_vbo_phantom.pad[0].x + 400.0) < 1.0) ? 1.0 : 0.0;
-    float v1 = (abs(u_ibo_phantom.pad[0].x) < 0.5 && abs(u_ibo_phantom.pad[6].x - 1.0) < 0.5) ? 1.0 : 0.0;
+    // std140: pad[1] = 字节16-31 = (u32[4],u32[5],u32[6],u32[7]) → 首带索引(u32[6], 字节24) = pad[1].z
+    float v1 = (abs(u_ibo_phantom.pad[0].x) < 0.5 && abs(u_ibo_phantom.pad[1].z - 1.0) < 0.5) ? 1.0 : 0.0;
     float v2 = (u_vbo_phantom.pad[1].x > 1500.0 && u_vbo_phantom.pad[1].x < 1800.0) ? 1.0 : 0.0;
     float v3 = clamp(abs(ModelViewMat[0].x) / 6.0, 0.0, 1.0);
     float v4 = clamp(abs(FogColor.x) / 6.0, 0.0, 1.0);

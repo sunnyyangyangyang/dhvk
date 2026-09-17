@@ -18,6 +18,8 @@ layout(std140) uniform IBO { vec4 pad; } u_ibo_phantom;
 out vec4 vertexColor;
 out float vertexSphericalDistance;
 out float vertexCylindricalDistance;
+// run81: 主管线自身 canary 自报(健康=[-401,-399] → fsh 保持原色; 越界 → fsh 染青)
+out float canary;
 
 // S0:世界坐标顶点(4000 块外的固定远墙)。
 // ModelViewMat/ProjMat 与地形同一套默认 uniform,
@@ -26,6 +28,7 @@ void main() {
     // 堆源判别式: 健康时 probe = VBO 头 x(-400.0, 墙 A 首顶点) + IBO 头 x(0.0) → 位移 0,
     // 与 S0 像素级一致; 堆失效(描述符读 0)→ 墙 A 瞬移到世界原点, 肉眼不可误判。
     float probe = u_vbo_phantom.pad.x + u_ibo_phantom.pad.x;
+    canary = probe;
     vec3 pos = Position + vec3(probe + 400.0, 0.0, 0.0);
     gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
     vertexSphericalDistance = fog_spherical_distance(pos);
