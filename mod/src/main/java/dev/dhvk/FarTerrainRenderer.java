@@ -432,37 +432,15 @@ public final class FarTerrainRenderer {
             // 尺寸未变: 纹理已在; 仍需每帧清屏(本帧重画)
         }
         offscreen.clear(encoder);
-        // 移植态: DT UBO 每帧重建为全新 160B 缓冲 —— createBuffer(ByteBuffer) 与 run82 网格缓冲
-        // 同路 (VMA 直传, 已实证); 官方 writeToBuffer 走瞬态 ring 的 uploadStaging,
-        // 帧末晚发 upload 会踩 ring 已定账的书记 (run96/100 SEGV 同根)。布局复刻官方 Transform:
-        // ModelViewMat(64) + ColorModulator(16) + ModelOffset(16) + TextureMat(64) = 160B。
-        java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocateDirect(160)
-                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        float[] mv = new float[16];
-        RenderSystem.getModelViewMatrixCopy().get(mv);
-        for (int i = 0; i < 16; i++) {
-            dtb.putFloat(mv[i]);
+        // 移植态终解 (run102): 帧末一切 CPU→GPU 上传都踩瞬态 ring 的定账 (run96/100/101 三连 SEGV
+        // 同根: 官方 createBuffer(ByteBuffer)/writeToBuffer 内部皆走 uploadStaging) → TAIL 里
+        // 零拷贝: 直接借官方场景帧写进 ring 的本帧 ModelView slice (探针 mixin 全帧捕获, 见
+        // MixinLevelRendererDhvk HEAD), 描述符指向 ring 既有区段, 与 DH 绑官方 uniform 同姿。
+        final GpuBufferSlice officialDt = DhVkClient.UNIFORM_SLICES.get("DynamicTransforms");
+        if (officialDt == null) {
+            // 本帧官方场景尚未写过 DT (首帧/暂停帧) → 下帧再画
+            return;
         }
-        dtb.putFloat(1.0F).putFloat(1.0F).putFloat(1.0F).putFloat(1.0F);
-        dtb.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
-        dtb.putFloat(0.0F);
-        float[] id = new float[16];
-        DT_IDENTITY.get(id);
-        for (int i = 0; i < 16; i++) {
-            dtb.putFloat(id[i]);
-        }
-        dtb.rewind();
-        // 双槽 ping-pong: 帧提交前等上一帧 fence (设备单 CBU 每帧重录 → 在飞 ≤1 帧), 隔一帧再回收
-        if (dtBufferOld != null) {
-            dtBufferOld.close();
-        }
-        dtBufferOld = dtBuffer;
-        if (dtBuffer != null) {
-            dtBuffer.close();
-        }
-        dtBuffer = RenderSystem.getDevice().createBuffer(
-                () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), dtb);
-        dtSlice = dtBuffer.slice();
         try (RenderPass pass = encoder.createRenderPass(
                 () -> "dhvk:far_offscreen",
                 offscreen.colorView(),
@@ -471,8 +449,7 @@ public final class FarTerrainRenderer {
                 java.util.OptionalDouble.of(1.0))) {
             pass.setPipeline(PIPELINE_DH);
             RenderSystem.bindDefaultUniforms(pass);
-            // DT 内容已在本 pass 开台前 writeToBuffer 上传 (JDK putFloat 路径, run97 实证)
-            pass.setUniform("DynamicTransforms", dtSlice);
+            pass.setUniform("DynamicTransforms", officialDt);
             pass.setVertexBuffer(0, meshVboBuffer.slice());
             pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
             pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
@@ -618,11 +595,7 @@ public final class FarTerrainRenderer {
 
     /** 移植态: 自建离屏目标对 (懒加载, 渲染线程内初始化)。 */
     private static DhVkOffscreen offscreen;
-    /** 移植态: 自持 DynamicTransforms UBO (绕开官方瞬态 ring 的 SEGV), 每帧重建 + 双槽回收。 */
-    private static GpuBuffer dtBuffer;
-    private static GpuBuffer dtBufferOld;
-    private static GpuBufferSlice dtSlice;
-    private static final org.joml.Matrix4f DT_IDENTITY = new org.joml.Matrix4f();
+
     /** S3 合成扇 VBO: NDC 四角 (±1,±1,0) + 白色, 16B/顶点, 与带几何同格式。 */
     private static GpuBuffer fanVboBuffer;
 

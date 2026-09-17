@@ -22,6 +22,17 @@ public class MixinLevelRendererDhvk {
     @Shadow
     private GameRenderer gameRenderer;
 
+    /** 帧头: 张开全帧捕获窗并清表 —— 官方场景 pass 的 setUniform(尤其 DynamicTransforms)
+     *  在场景执行期间被探针收进 UNIFORM_SLICES, TAIL 时直接借其 ring slice (零拷贝, run102)。 */
+    @Inject(at = @At("HEAD"), method = "render")
+    private void dhvkHead(final CallbackInfo ci) {
+        if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
+            return;
+        }
+        DhVkClient.uniformCaptureArmed = true;
+        DhVkClient.UNIFORM_SLICES.clear();
+    }
+
     @Inject(at = @At("TAIL"), method = "render")
     private void dhvkTail(final CallbackInfo ci) {
         if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
