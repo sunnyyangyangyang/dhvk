@@ -30,19 +30,12 @@ void main() {
     float cx = mix(-0.55, 0.55, wallId) + Position.z * 0.05;
     float cy = (Position.y - 64.0) * 0.01;
     gl_Position = vec4(cx, cy, 0.0, 1.0);
-    // run83 幻细胞指纹: 六档电压表 —— 1.0=头-400(VBO cell) / 0.2=头零(IBO头或死槽) /
-    //   |x|/6=哨兵i+1或矩阵值(认出探针两个幻影块各自指向哪个 cell)
-    float classify(float x) {
-        if (abs(x + 400.0) < 1.0) {
-            return 1.0;
-        }
-        if (abs(x) < 0.5) {
-            return 0.2;
-        }
-        return clamp(abs(x) / 6.0, 0.0, 1.0);
-    }
-    float v0 = classify(u_vbo_phantom.pad[0].x);
-    float v1 = classify(u_ibo_phantom.pad[0].x);
+    // run84 幻细胞指纹(内联, run83 局部函数令探针管线失验致 setPipeline 抛崩): 六档电压表
+    //   1.0=头-400(VBO cell) / 0.2=头零(IBO头或死槽) / |x|/6=哨兵i+1或矩阵值
+    float hx = u_vbo_phantom.pad[0].x;
+    float hy = u_ibo_phantom.pad[0].x;
+    float v0 = (abs(hx + 400.0) < 1.0) ? 1.0 : ((abs(hx) < 0.5) ? 0.2 : clamp(abs(hx) / 6.0, 0.0, 1.0));
+    float v1 = (abs(hy + 400.0) < 1.0) ? 1.0 : ((abs(hy) < 0.5) ? 0.2 : clamp(abs(hy) / 6.0, 0.0, 1.0));
     float v2 = (u_vbo_phantom.pad[1].x > 1500.0 && u_vbo_phantom.pad[1].x < 1800.0) ? 1.0 : 0.0;
     float v3 = clamp(abs(ModelViewMat[0].x) / 6.0, 0.0, 1.0);
     float v4 = clamp(abs(FogColor.x) / 6.0, 0.0, 1.0);
