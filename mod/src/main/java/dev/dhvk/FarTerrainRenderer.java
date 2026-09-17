@@ -435,10 +435,13 @@ public final class FarTerrainRenderer {
         }
         // 几何构建+持久缓冲上传 (信标模式下不受 chunk 就绪门限); 首帧未就绪则下帧再试
         meshFrame(encoder);
-        if (offscreen == null) {
-            offscreen = new DhVkOffscreen();
+        // 二分门 (run110e): DHVK_NOOFFSCREEN=1 跳过离屏对 (纯缓冲staging对照, 验证ring污染说)
+        if (!"1".equals(System.getenv("DHVK_NOOFFSCREEN"))) {
+            if (offscreen == null) {
+                offscreen = new DhVkOffscreen();
+            }
+            offscreen.tryCreateOrResize(mainTarget.width, mainTarget.height);
         }
-        offscreen.tryCreateOrResize(mainTarget.width, mainTarget.height);
         if (fanVboBuffer == null) {
             fanVboBuffer = createFanVbo();
         }
