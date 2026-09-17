@@ -440,8 +440,24 @@ public final class FarTerrainRenderer {
                 java.util.OptionalDouble.of(1.0))) {
             pass.setPipeline(PIPELINE_DH);
             RenderSystem.bindDefaultUniforms(pass);
-            pass.setUniform("DynamicTransforms",
-                    RenderSystem.getDynamicUniforms().writeTransform(RenderSystem.getModelViewMatrixCopy()));
+            // 移植态: 自持 DT UBO 缓冲, 绕开官方瞬态 ring (run96 SEGV: ring 帧中多次扩容,
+            // C2 持旧引用做 arraycopy 踩飞)。布局逐字节复刻官方 Transform:
+            // ModelViewMat(64) + ColorModulator(16) + ModelOffset(16) + TextureMat(64) = 160B
+            if (dtBuffer == null) {
+                dtBuffer = RenderSystem.getDevice().createBuffer(
+                        () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), 160L);
+                dtSlice = dtBuffer.slice();
+            }
+            java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocate(160)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            RenderSystem.getModelViewMatrixCopy().get(dtb);
+            dtb.position(64);
+            dtb.putFloat(1.0F).putFloat(1.0F).putFloat(1.0F).putFloat(1.0F);
+            dtb.position(96);
+            DT_IDENTITY.get(dtb);
+            dtb.rewind();
+            encoder.writeToBuffer(dtSlice, dtb);
+            pass.setUniform("DynamicTransforms", dtSlice);
             pass.setVertexBuffer(0, meshVboBuffer.slice());
             pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
             pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
@@ -587,6 +603,10 @@ public final class FarTerrainRenderer {
 
     /** 移植态: 自建离屏目标对 (懒加载, 渲染线程内初始化)。 */
     private static DhVkOffscreen offscreen;
+    /** 移植态: 自持 DynamicTransforms UBO (绕开官方瞬态 ring 的 SEGV)。 */
+    private static GpuBuffer dtBuffer;
+    private static GpuBufferSlice dtSlice;
+    private static final org.joml.Matrix4f DT_IDENTITY = new org.joml.Matrix4f();
     /** S3 合成扇 VBO: NDC 四角 (±1,±1,0) + 白色, 16B/顶点, 与带几何同格式。 */
     private static GpuBuffer fanVboBuffer;
 
