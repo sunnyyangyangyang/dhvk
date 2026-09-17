@@ -31,6 +31,8 @@ public class MixinLevelRendererDhvk {
         }
         DhVkClient.uniformCaptureArmed = true;
         DhVkClient.UNIFORM_SLICES.clear();
+        // 一切 CPU→GPU 上传集中在帧首 (ring 当帧第一用户窗口, 与官方场景 pass 同窗)
+        FarTerrainRenderer.prepareFrameHead(this.gameRenderer.mainRenderTarget());
     }
 
     @Inject(at = @At("TAIL"), method = "render")

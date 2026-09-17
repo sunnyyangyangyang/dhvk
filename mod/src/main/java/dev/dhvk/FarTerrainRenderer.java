@@ -414,23 +414,41 @@ public final class FarTerrainRenderer {
      * 纯官方管线 PIPELINE_DH + 整缓冲绑定 + bindDefaultUniforms; S3 再在此追加
      * 全屏合成扇把离屏结果贴回主目标。帧末由设备统一提交 (与 DH 本体同节奏)。
      */
-    public static void dhStyleFrame(final RenderTarget mainTarget) {
+    /**
+     * 移植态帧头 (HEAD 钩子, 场景执行前): 一切 CPU→GPU 上传都放这里 —— 帧首是瞬态 ring
+     * 当帧的第一用户, 与官方场景 pass 同窗 (健康); TAIL 帧末晚发 upload 必踩已定账 ring
+     * (run96/100/101/102 四连 SEGV 同根)。此处: S0/探针缓冲 + 几何构建与持久缓冲上传
+     * (createBuffer(ByteBuffer)=ring staging) + 离屏对建立/重建 + 扇 VBO 首建。
+     */
+    public static void prepareFrameHead(final RenderTarget mainTarget) {
         if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
             return;
         }
         final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         ensureBuffers();
-        // 移植态: 几何构建+持久缓冲上传走 meshFrame (信标模式下不受 chunk 就绪门限); 首帧未就绪则下帧再试
-        meshFrame(encoder);
-        if (DhVkClient.disabled || meshVboBuffer == null || meshIboBuffer == null) {
+        if (DhVkClient.disabled) {
             return;
         }
+        // 几何构建+持久缓冲上传 (信标模式下不受 chunk 就绪门限); 首帧未就绪则下帧再试
+        meshFrame(encoder);
         if (offscreen == null) {
             offscreen = new DhVkOffscreen();
         }
-        if (!offscreen.tryCreateOrResize(mainTarget.width, mainTarget.height)) {
-            // 尺寸未变: 纹理已在; 仍需每帧清屏(本帧重画)
+        offscreen.tryCreateOrResize(mainTarget.width, mainTarget.height);
+        if (fanVboBuffer == null) {
+            fanVboBuffer = createFanVbo();
         }
+    }
+
+    public static void dhStyleFrame(final RenderTarget mainTarget) {
+        if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
+            return;
+        }
+        if (offscreen == null || !offscreen.isReady() || meshVboBuffer == null || meshIboBuffer == null
+                || fanVboBuffer == null) {
+            return;
+        }
+        final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         offscreen.clear(encoder);
         // 移植态终解 (run102): 帧末一切 CPU→GPU 上传都踩瞬态 ring 的定账 (run96/100/101 三连 SEGV
         // 同根: 官方 createBuffer(ByteBuffer)/writeToBuffer 内部皆走 uploadStaging) → TAIL 里
@@ -455,9 +473,6 @@ public final class FarTerrainRenderer {
             pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
         }
         // S3: 合成扇 → 主目标 —— 只把离屏深度有效(画到)的像素贴回场景
-        if (fanVboBuffer == null) {
-            fanVboBuffer = createFanVbo();
-        }
         offscreen.ensureSampler();
         try (RenderPass apply = encoder.createRenderPass(
                 () -> "dhvk:far_apply",
