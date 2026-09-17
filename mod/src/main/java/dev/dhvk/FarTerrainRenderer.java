@@ -432,17 +432,11 @@ public final class FarTerrainRenderer {
             // 尺寸未变: 纹理已在; 仍需每帧清屏(本帧重画)
         }
         offscreen.clear(encoder);
-        // 移植态: 自持 DT UBO 缓冲, 绕开官方瞬态 ring (run96 SEGV: ring 帧中多次扩容
-        // C2 持旧引用做 arraycopy 踩飞)。布局逐字节复刻官方 Transform:
+        // 移植态: DT UBO 每帧重建为全新 160B 缓冲 —— createBuffer(ByteBuffer) 与 run82 网格缓冲
+        // 同路 (VMA 直传, 已实证); 官方 writeToBuffer 走瞬态 ring 的 uploadStaging,
+        // 帧末晚发 upload 会踩 ring 已定账的书记 (run96/100 SEGV 同根)。布局复刻官方 Transform:
         // ModelViewMat(64) + ColorModulator(16) + ModelOffset(16) + TextureMat(64) = 160B。
-        // writeToBuffer 属 pass 外命令 → 必须在开 pass 前完成 (官方编码器纪律, run98 实证)。
-        if (dtBuffer == null) {
-            // COPY_DST: writeToBuffer 是复制语义, 目标缓冲必须带该位 (run99 实证)
-            dtBuffer = RenderSystem.getDevice().createBuffer(
-                    () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST | bda(), 160L);
-            dtSlice = dtBuffer.slice();
-        }
-        java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocate(160)
+        java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocateDirect(160)
                 .order(java.nio.ByteOrder.LITTLE_ENDIAN);
         float[] mv = new float[16];
         RenderSystem.getModelViewMatrixCopy().get(mv);
@@ -458,7 +452,17 @@ public final class FarTerrainRenderer {
             dtb.putFloat(id[i]);
         }
         dtb.rewind();
-        encoder.writeToBuffer(dtSlice, dtb);
+        // 双槽 ping-pong: 帧提交前等上一帧 fence (设备单 CBU 每帧重录 → 在飞 ≤1 帧), 隔一帧再回收
+        if (dtBufferOld != null) {
+            dtBufferOld.close();
+        }
+        dtBufferOld = dtBuffer;
+        if (dtBuffer != null) {
+            dtBuffer.close();
+        }
+        dtBuffer = RenderSystem.getDevice().createBuffer(
+                () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), dtb);
+        dtSlice = dtBuffer.slice();
         try (RenderPass pass = encoder.createRenderPass(
                 () -> "dhvk:far_offscreen",
                 offscreen.colorView(),
@@ -614,8 +618,9 @@ public final class FarTerrainRenderer {
 
     /** 移植态: 自建离屏目标对 (懒加载, 渲染线程内初始化)。 */
     private static DhVkOffscreen offscreen;
-    /** 移植态: 自持 DynamicTransforms UBO (绕开官方瞬态 ring 的 SEGV)。 */
+    /** 移植态: 自持 DynamicTransforms UBO (绕开官方瞬态 ring 的 SEGV), 每帧重建 + 双槽回收。 */
     private static GpuBuffer dtBuffer;
+    private static GpuBuffer dtBufferOld;
     private static GpuBufferSlice dtSlice;
     private static final org.joml.Matrix4f DT_IDENTITY = new org.joml.Matrix4f();
     /** S3 合成扇 VBO: NDC 四角 (±1,±1,0) + 白色, 16B/顶点, 与带几何同格式。 */
