@@ -684,7 +684,12 @@ public final class FarTerrainRenderer {
                 byte cr;
                 byte cg;
                 byte cb;
-                if (q.tintRgb() == 0) {
+                if (lift != 0) {
+                    // 目验收调试色: 抬升模式纸片整片纯红 (斩断均色草绿对纹理草绿的伪装嫌疑)
+                    cr = (byte) 255;
+                    cg = 0;
+                    cb = 0;
+                } else if (q.tintRgb() == 0) {
                     cr = cg = cb = (byte) 255;
                 } else {
                     cr = (byte) ((q.tintRgb() >> 16) & 0xFF);
