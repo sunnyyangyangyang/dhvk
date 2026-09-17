@@ -78,11 +78,11 @@ public final class DhVkClient implements ClientModInitializer {
         return !"1".equals(System.getenv("DHVK_NOPROBE"));
     }
 
-    /** S2v2 任务 1: 远带几何源因子。默认 = greedy（CPU 贪心网格）；
-     *  DHVK_MESH=height = S1 合成 ring 路径（留至贪心 spike 过闸后退役）。 */
-    public static String meshMode() {
-        String m = System.getenv("DHVK_MESH");
-        return (m == null || m.isEmpty()) ? "greedy" : m;
+    /** S2v2 步骤 15: 合成调试环 A/B 因子（高度场退役后保留, 规格 §0: 降级为机制验收
+     *  工具）: DHVK_SYNTRING=1 → 远 pass 几何换回 S1 合成环(VoxelWallSynthesizer),
+     *  用于瞬态环上传/绘制/堆表机制的独立再验证。默认关 = 贪心带(生产路径)。 */
+    public static boolean synthRingOn() {
+        return "1".equals(System.getenv("DHVK_SYNTRING"));
     }
 
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
@@ -137,10 +137,10 @@ public final class DhVkClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("[dhvk] client entrypoint initialized (mc 26.2, fabric)");
-        LOGGER.info("[dhvk] far_terrain gate: wall={}, probe={}, mesh={} (DHVK_NOWALL={}, "
-                        + "DHVK_NOPROBE={}, DHVK_MESH={})",
-                wallEnvOn(), probeEnvOn(), meshMode(),
-                System.getenv("DHVK_NOWALL"), System.getenv("DHVK_NOPROBE"), System.getenv("DHVK_MESH"));
+        LOGGER.info("[dhvk] far_terrain gate: wall={}, probe={}, synth={} (DHVK_NOWALL={}, "
+                        + "DHVK_NOPROBE={}, DHVK_SYNTRING={})",
+                wallEnvOn(), probeEnvOn(), synthRingOn(),
+                System.getenv("DHVK_NOWALL"), System.getenv("DHVK_NOPROBE"), System.getenv("DHVK_SYNTRING"));
         LOGGER.info("[dhvk] vk handles: {} (capture 在设备创建时刻, 首帧前必就绪)", VkHandles.format());
     }
 

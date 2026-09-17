@@ -232,8 +232,9 @@ public final class FarTerrainRenderer {
      *  5090 驱动是否硬执行待 run30 硬件裁决。 */
     private static long uboAlign = 0L;
 
-    /** S2v2 任务 1: 几何源因子（默认 greedy = CPU 贪心网格；DHVK_MESH=height = S1 合成 ring）。 */
-    private static final String MESH_MODE = DhVkClient.meshMode();
+    /** S2v2 步骤 15: 几何源 —— 默认贪心带(生产路径); DHVK_SYNTRING=1 换回 S1 合成
+     *  调试环(VoxelWallSynthesizer; 规格 §0: 高度场退役后保留为机制验收工具)。 */
+    private static final boolean SYNTH_RING = DhVkClient.synthRingOn();
 
     private static GpuBuffer vertexBuffer;
     private static GpuBufferSlice vertexSlice;
@@ -412,13 +413,14 @@ public final class FarTerrainRenderer {
             renderPass.setVertexBuffer(0, streamVboSlice);
             // 索引绑定整块(官方 API 只收 GpuBuffer; vkCmdBindIndexBuffer 恒绑缓冲基址 0),
             // slice 内偏移经 firstIndex = 偏移字节 ÷ 索引元素宽 对齐(run50 巨面片根因)
-            // 贪心 = u32 顺序 IBO（三角汤）;height = S1 u16 ring
+            // 贪心带 = u32 顺序 IBO（三角汤）;合成调试环 = S1 u16 ring
+            boolean greedy = !SYNTH_RING;
             renderPass.setIndexBuffer(streamIboSlice.buffer(),
-                    "greedy".equals(MESH_MODE) ? IndexType.INT : IndexType.SHORT);
+                    greedy ? IndexType.INT : IndexType.SHORT);
             // 堆源绑定:每帧重写 official uniform 堆描述符 + 绑整表(setPipeline 后、drawIndexed 前)
             dhvkBindHeap(encoder);
-            int firstIndex = (int) (streamIboSlice.offset() / ("greedy".equals(MESH_MODE) ? 4L : 2L));
-            int totalIndices = "greedy".equals(MESH_MODE) ? meshIndexCount : VoxelWallSynthesizer.TOTAL_INDICES;
+            int firstIndex = (int) (streamIboSlice.offset() / (greedy ? 4L : 2L));
+            int totalIndices = greedy ? meshIndexCount : VoxelWallSynthesizer.TOTAL_INDICES;
             renderPass.drawIndexed(totalIndices, 1, firstIndex, 0, 0);
             // run28: 探针二绘。NDC 钉死 + 深度恒过 → 无论矩阵健康与否, 色板必现屏;
             // RGB = ModelViewMat 行0 原始值(GPU 侧堆读真值), 与 CPU truth 日志对拍。
@@ -451,7 +453,7 @@ public final class FarTerrainRenderer {
     private static final long STREAM_BUDGET_US = 1000L;
     private static final int STREAM_BUDGET_LOG_FRAMES = 10;
 
-    // ============ S2v2 任务 1: 贪心几何（DHVK_MESH 默认 greedy） ============
+    // ============ S2v2 任务 1: 贪心几何（步骤 15 起 = 唯一生产路径） ============
     /** 贪心几何缓存（render 线程独占）。head 顶点 (x=-400) 使 shader 探针位移保持 0
      *  （S0 哨兵语义不变：堆健康 → 位移 0；堆失效 → 几何整体跳 +400）；IBO 头 6 项全 0。 */
     private static byte[] meshVbo;
@@ -478,10 +480,11 @@ public final class FarTerrainRenderer {
         meshIbo = headIbo.array();
     }
 
-    /** 任务 4: 每帧合成远端几何 → 官方瞬态 ring 双 slice(VBO/IBO), 预算计时。
-     *  失败 = 门槛不过 → mod 自禁用(明确日志, 不兜底)。 */
+    /** 任务 4: 每帧产出远端几何(默认 = 贪心带 meshFrame; DHVK_SYNTRING=1 = S1 合成调试环,
+     *  步骤 15 高度场退役后机制再验证的唯一入口) → 官方瞬态 ring 双 slice(VBO/IBO),
+     *  预算计时。失败 = 门槛不过 → mod 自禁用(明确日志, 不兜底)。 */
     private static void streamFrame(final CommandEncoder encoder) {
-        if ("greedy".equals(MESH_MODE)) {
+        if (!SYNTH_RING) {
             meshFrame(encoder);
             return;
         }

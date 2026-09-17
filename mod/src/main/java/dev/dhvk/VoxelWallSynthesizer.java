@@ -12,6 +12,10 @@ import java.nio.ByteBuffer;
  * <p>产物每帧写入官方 {@code VulkanTransientMemory} 瞬态 ring 的两个 slice
  * (VBO/IBO 各一 —— 官方 TransientGpuBuffer 不可子切片, 双 slice 是正身姿势),
  * 堆表 VBO/IBO 两槽在绘制前重写为本帧 slice 的 BDA(见 FarTerrainRenderer)。
+ *
+ * <p>S2v2 步骤 15(高度场退役): 帧路径默认只走贪心带; 本环降级为机制验收工具 ——
+ * {@code DHVK_SYNTRING=1} 换回本环, 独立再验证瞬态环上传/绘制/堆表机制
+ * (规格 §0: 与高度场退役无关, 墙 A/B + 探针板几何照旧)。
  */
 public final class VoxelWallSynthesizer {
 
