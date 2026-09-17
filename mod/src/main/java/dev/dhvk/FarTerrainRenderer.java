@@ -424,6 +424,10 @@ public final class FarTerrainRenderer {
         if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
             return;
         }
+        // 二分门 (run110c): DHVK_NOSTAGE=1 跳过全部帧首 staging → 验证瞬态 ring 记账污染说
+        if ("1".equals(System.getenv("DHVK_NOSTAGE"))) {
+            return;
+        }
         final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         ensureBuffers();
         if (DhVkClient.disabled) {
