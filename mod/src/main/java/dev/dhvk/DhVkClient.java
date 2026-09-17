@@ -111,6 +111,12 @@ public final class DhVkClient implements ClientModInitializer {
         return "1".equals(System.getenv("DHVK_NODEPTH"));
     }
 
+    /** run87 刀一 A/B (DH 参照): DHVK_NOSURGERY=1 → 关闭静态映射手术/名册/堆表重写,
+     *  全部走官方原生描述符通道(DH 26.2 姿势: 纯 setUniform/官方管线编译, 零手术)。 */
+    public static boolean surgeryOff() {
+        return "1".equals(System.getenv("DHVK_NOSURGERY"));
+    }
+
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
      *  用途: 出生点与目验目标 chunk 不一致时钉住 tile 带。 */
     public static String meshAt() {

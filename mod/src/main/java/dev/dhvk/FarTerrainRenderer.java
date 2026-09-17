@@ -247,6 +247,8 @@ public final class FarTerrainRenderer {
     /** run24: 前 N 帧做"期望 vs 主机读回"表验证(之后静默)。render 线程独占。 */
     private static final int TABLE_CHECK_FRAMES = 5;
     private static int frameCounter;
+    /** run87: NOSURGERY 一次性日志闩。 */
+    private static boolean nosurgeryLogOnce;
     /** run30: 设备 minUniformBufferOffsetAlignment(run30LogDeviceFacts 首帧填充,
      *  未查询前 = 0 跳过对齐审计)。UBO 描述符地址必须满足该对齐(VUID-12350),
      *  5090 驱动是否硬执行待 run30 硬件裁决。 */
@@ -871,7 +873,8 @@ public final class FarTerrainRenderer {
      *  run23 换位裁决(run22 根因): 2 号绑定实测 = Projection(非 Globals)——shader 的 ProjMat
      *  读 2 号槽, run22 把 Globals slice 塞进去 → gl_Position 被裁没, 双墙全灭。 */
     private static void dhvkBindHeap(final CommandEncoder encoder) {
-        if (heap == null) {
+        // run87: NOSURGERY 时堆表重写整体跳过(官方通道经 setUniform 自管描述符)
+        if (heap == null || DhVkClient.surgeryOff()) {
             return;
         }
         long cbu = ((DhvkCommandEncoder) (Object) encoder).dhvkCurrentCbu();
@@ -1044,6 +1047,13 @@ public final class FarTerrainRenderer {
      * </ol>
      */
     private static synchronized void ensureHeapSurgery() {
+        if (DhVkClient.surgeryOff()) {
+            if (!nosurgeryLogOnce) {
+                nosurgeryLogOnce = true;
+                LOGGER.info("[dhvk] run87 DHVK_NOSURGERY: 手术链关闭(映射/名册/堆表重写全关, 纯官方描述符通道, DH 26.2 姿势)");
+            }
+            return;
+        }
         if (DhVkClient.mappingInfoNode != 0L || heap == null) {
             return;
         }
