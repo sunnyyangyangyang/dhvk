@@ -100,6 +100,12 @@ public final class DhVkClient implements ClientModInitializer {
         }
     }
 
+    /** 目验收调试因子: DHVK_NOEXCLUDE=1 → buildMeshBand 跳过近场豁免。
+     *  抬升(lift≠0)调试场景纸片悬空、与近程地形无重叠 → 豁免纯是负债, 亦自动跳过。 */
+    public static boolean noExcludeOn() {
+        return "1".equals(System.getenv("DHVK_NOEXCLUDE"));
+    }
+
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
      *  用途: 出生点与目验目标 chunk 不一致时钉住 tile 带。 */
     public static String meshAt() {

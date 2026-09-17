@@ -629,8 +629,9 @@ public final class FarTerrainRenderer {
         // 共面 → 依旧不可见。生产默认 0。
         int lift = DhVkClient.meshLift();
         meshOy = Math.floorDiv((long) surfaceY - 48L, 32) * 32;
-        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} -> bandY=[{}, {}] geoLift={}",
-                surfaceY, (int) py, meshOy, meshOy + 96L, lift);
+        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} -> bandY=[{}, {}] geoLift={} "
+                        + "cam=({}, {})",
+                surfaceY, (int) py, meshOy, meshOy + 96L, lift, (int) camX, (int) camZ);
         java.util.List<BandTile> band = new ArrayList<>();
         int missing = 0;
         for (int dx = -1; dx <= 1; dx++) {
@@ -645,8 +646,12 @@ public final class FarTerrainRenderer {
                         continue;
                     }
                     java.util.List<CpuGreedyMeshExtractor.Quad> quads = MESH_EXTRACTOR.quads(tile);
+                    // 近场豁免: lift≠0(纸片悬空调试)或 DHVK_NOEXCLUDE=1 → 跳过(run72-76 排查定谳:
+                    // 悬空纸片与近程地形无重叠, 豁免纯是负债); 生产(lift=0)按抬升后坐标剔除
                     java.util.List<CpuGreedyMeshExtractor.Quad> kept =
-                            excludeNearField(quads, tx, ty, tz, camX, camY, camZ);
+                            (lift == 0 && !DhVkClient.noExcludeOn())
+                                    ? excludeNearField(quads, tx, ty, tz, camX, camY, camZ, lift)
+                                    : quads;
                     LOGGER.info("[dhvk] s2v2 mesh tile ({}, {}, {}): quads={} kept={} verts={}",
                             tx / 32, ty / 32, tz / 32, quads.size(), kept.size(), kept.size() * 6);
                     band.add(new BandTile(tile, tx, ty, tz, kept));
@@ -752,7 +757,7 @@ public final class FarTerrainRenderer {
     /** 近场豁免(跨界面整面舍弃, 无视觉洞): 与交错路径同一 quadCorners 角点源。 */
     private static java.util.List<CpuGreedyMeshExtractor.Quad> excludeNearField(
             java.util.List<CpuGreedyMeshExtractor.Quad> quads,
-            long ox, long oy, long oz, double px, double py, double pz) {
+            long ox, long oy, long oz, double px, double py, double pz, long lift) {
         java.util.List<CpuGreedyMeshExtractor.Quad> out = new java.util.ArrayList<>();
         float r2 = MESH_EXCLUDE_RADIUS * MESH_EXCLUDE_RADIUS;
         for (CpuGreedyMeshExtractor.Quad q : quads) {
@@ -762,7 +767,7 @@ public final class FarTerrainRenderer {
                 // quadCorners 序 = p0,p1,p2,p0,p2,p3 → 唯一角点 p0/p1/p2/p3 段首下标 0/3/6/15
                 int base = (k == 3) ? 15 : k * 3;
                 double wx = ox + c[base];
-                double wy = oy + c[base + 1];
+                double wy = oy + c[base + 1] + lift;
                 double wz = oz + c[base + 2];
                 double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py) + (wz - pz) * (wz - pz);
                 far = d2 >= r2;
