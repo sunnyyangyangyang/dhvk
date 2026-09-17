@@ -1066,6 +1066,7 @@ public final class FarTerrainRenderer {
         DhVkClient.pipelineSurgeryArmed = true;
         try {
             RenderSystem.getDevice().precompilePipeline(PIPELINE);
+            RenderSystem.getDevice().precompilePipeline(PIPELINE_NODEPTH);
             RenderSystem.getDevice().precompilePipeline(PIPELINE_PROBE);
             RenderSystem.getDevice().precompilePipeline(PIPELINE_PROBE2_REPLACE);
             RenderSystem.getDevice().precompilePipeline(PIPELINE_PROBE2_BLEND);
