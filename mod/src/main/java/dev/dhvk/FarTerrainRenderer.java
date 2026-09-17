@@ -534,7 +534,10 @@ public final class FarTerrainRenderer {
         if ("1".equals(System.getenv("DHVK_RINGSTAGE"))) {
             return RenderSystem.getDevice().createBuffer(() -> label, usage, data);
         }
-        final GpuBuffer buffer = RenderSystem.getDevice().createBuffer(() -> label, usage, (long) data.remaining());
+        // full VVL (run117): vkCmdUpdateBuffer 的 dst 必须带 TRANSFER_DST — 尺寸创建不自带,
+        // ring 旧路径靠 createBuffer(ByteBuffer) 内部 |8 位补齐; 裸路径显式 OR USAGE_COPY_DST。
+        final GpuBuffer buffer = RenderSystem.getDevice().createBuffer(
+                () -> label, usage | GpuBuffer.USAGE_COPY_DST, (long) data.remaining());
         DhVkRawUploader.upload(buffer, data);
         return buffer;
     }
