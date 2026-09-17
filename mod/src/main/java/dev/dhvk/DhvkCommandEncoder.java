@@ -17,8 +17,13 @@ public interface DhvkCommandEncoder {
     /** 当前录制中的 CBU 裸句柄(0 = encoder 空闲, 无活动命令缓冲)。 */
     long dhvkCurrentCbu();
 
-    /** 在当前录制中的 CBU 写一个 GPU 时间戳(委托官方公开 writeTimestamp, s2 笔记 §1.4)。 */
+    /** 在当前录制中的 CBU 写一个 GPU 时间戳(纯写入; 重置走 {@link #dhvkResetQueries(long, int, int)},
+     *  run62/63/64 三连修: 官方 CPU 侧重置需队列空闲, CBU 侧重置禁于 render pass 内)。 */
     void dhvkWriteTimestamp(GpuQueryPool pool, int slot);
+
+    /** 在当前录制中的 CBU 重置查询段(CBU 侧 vkCmdResetQueryPool, 必须于 render pass 实例外调用;
+     *  在途查询对同队列按提交序晚于两帧前同对写入的 GPU 执行 → 无竞态, run64 修)。 */
+    void dhvkResetQueries(long pool, int first, int count);
 
     /** 官方 timeline semaphore 裸句柄(每帧 submit 尾部以本帧 submitIndex 信号; 0 = 非 Vulkan 后端)。 */
     long dhvkSubmitSemaphore();

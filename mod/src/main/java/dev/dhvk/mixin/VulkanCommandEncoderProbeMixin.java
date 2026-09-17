@@ -2,7 +2,10 @@ package dev.dhvk.mixin;
 
 import com.mojang.blaze3d.systems.GpuQueryPool;
 import dev.dhvk.DhvkCommandEncoder;
+import dev.dhvk.DhvkQueryPool;
 import org.jspecify.annotations.Nullable;
+import org.lwjgl.vulkan.KHRSynchronization2;
+import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -37,9 +40,21 @@ public abstract class VulkanCommandEncoderProbeMixin implements DhvkCommandEncod
 
     @Override
     public void dhvkWriteTimestamp(GpuQueryPool pool, int slot) {
-        // mixin 类编译期非 target 子类(无 @Shadow 方法桩), 运行时才是 → 经 Object 双投
-        // 调官方公开方法(与渲染器侧 ((DhvkCommandEncoder)(Object)encoder) 同姿势)
-        ((com.mojang.blaze3d.vulkan.VulkanCommandEncoder) (Object) this).writeTimestamp(pool, slot);
+        // run64: 纯写入。重置移入 dhvkResetQueries —— vkCmdResetQueryPool 禁于 render pass 实例内
+        // (run63 VVL 实锤), 而官方 CPU 侧 vkResetQueryPool 要求队列空闲(run62 崩溃根因)。
+        long q = ((DhvkQueryPool) (Object) pool).dhvkHandle();
+        if (this.currentCommandBuffer != null) {
+            KHRSynchronization2.vkCmdWriteTimestamp2KHR(this.currentCommandBuffer, 65536L, q, slot);
+        }
+    }
+
+    @Override
+    public void dhvkResetQueries(long pool, int first, int count) {
+        // CBU 侧重置(render pass 实例外, 帧图 createRenderPass 之前): 同队列按提交序,
+        // 对同查询对的上一写入(两帧前的 CBU)在 GPU 上先于本重置执行 → 串行无竞态。
+        if (this.currentCommandBuffer != null) {
+            VK12.vkCmdResetQueryPool(this.currentCommandBuffer, pool, first, count);
+        }
     }
 
     @Override

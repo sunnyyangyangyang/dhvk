@@ -22,8 +22,14 @@ import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
 import com.mojang.blaze3d.vulkan.VulkanRenderPipeline;
 import dev.dhvk.heap.DescriptorHeap;
+import dev.dhvk.mesh.BlockTile;
+import dev.dhvk.mesh.BlockTileBuilder;
+import dev.dhvk.mesh.CpuGreedyMeshExtractor;
+import dev.dhvk.mesh.LevelBlockSource;
+import dev.dhvk.mesh.MapTileTable;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -31,6 +37,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BindGroupLayouts;
 import net.minecraft.client.renderer.LevelTargetBundle;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -225,6 +232,9 @@ public final class FarTerrainRenderer {
      *  5090 驱动是否硬执行待 run30 硬件裁决。 */
     private static long uboAlign = 0L;
 
+    /** S2v2 任务 1: 几何源因子（默认 greedy = CPU 贪心网格；DHVK_MESH=height = S1 合成 ring）。 */
+    private static final String MESH_MODE = DhVkClient.meshMode();
+
     private static GpuBuffer vertexBuffer;
     private static GpuBufferSlice vertexSlice;
     private static GpuBuffer indexBuffer;
@@ -309,6 +319,14 @@ public final class FarTerrainRenderer {
         STREAM_IBO_RETENTION.clear();
         BDA_CACHE.clear();
         frameCounter = 0;
+        // S2v2 任务 1: 贪心几何状态复位（静态字节缓存由 buildMeshBand 再生）
+        meshBuilt = false;
+        meshVertCount = 0;
+        meshIndexCount = 6;
+        meshOx = 0L;
+        meshOy = 0L;
+        meshOz = 0L;
+        meshWaitFrames = 0;
     }
 
     /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。mod 自禁用时不挂 pass。 */
@@ -375,6 +393,9 @@ public final class FarTerrainRenderer {
         if (DhVkClient.disabled) {
             return;
         }
+        // S2 步骤 1(run64): 重置本帧查询对 —— CBU 侧重置禁于 render pass 实例内(VUID),
+        // 故于 createRenderPass 之前(CBU 已录制, 尚无 render pass)发行
+        FarPassStopwatch.resetFrameQueries((DhvkCommandEncoder) (Object) encoder);
         try (RenderPass renderPass = encoder.createRenderPass(
                 () -> "FarTerrain", colorView, Optional.empty(), depthView, OptionalDouble.empty())) {
             // S2 步骤 1: 秒表起始(slot 0) —— 与官方 pass 录制同一 CBU(s2 笔记 §2)
@@ -389,13 +410,16 @@ public final class FarTerrainRenderer {
             renderPass.setUniform("VBO", streamVboSlice);
             renderPass.setUniform("IBO", streamIboSlice);
             renderPass.setVertexBuffer(0, streamVboSlice);
-            // 索引绑定整块(官方 API 只收 GpuBuffer), slice 内偏移经 drawIndexed 的
-            // firstIndex(字节)对齐
-            renderPass.setIndexBuffer(streamIboSlice.buffer(), IndexType.SHORT);
+            // 索引绑定整块(官方 API 只收 GpuBuffer; vkCmdBindIndexBuffer 恒绑缓冲基址 0),
+            // slice 内偏移经 firstIndex = 偏移字节 ÷ 索引元素宽 对齐(run50 巨面片根因)
+            // 贪心 = u32 顺序 IBO（三角汤）;height = S1 u16 ring
+            renderPass.setIndexBuffer(streamIboSlice.buffer(),
+                    "greedy".equals(MESH_MODE) ? IndexType.INT : IndexType.SHORT);
             // 堆源绑定:每帧重写 official uniform 堆描述符 + 绑整表(setPipeline 后、drawIndexed 前)
             dhvkBindHeap(encoder);
-            int firstIndex = (int) (streamIboSlice.offset() * 2L);
-            renderPass.drawIndexed(VoxelWallSynthesizer.TOTAL_INDICES, 1, firstIndex, 0, 0);
+            int firstIndex = (int) (streamIboSlice.offset() / ("greedy".equals(MESH_MODE) ? 4L : 2L));
+            int totalIndices = "greedy".equals(MESH_MODE) ? meshIndexCount : VoxelWallSynthesizer.TOTAL_INDICES;
+            renderPass.drawIndexed(totalIndices, 1, firstIndex, 0, 0);
             // run28: 探针二绘。NDC 钉死 + 深度恒过 → 无论矩阵健康与否, 色板必现屏;
             // RGB = ModelViewMat 行0 原始值(GPU 侧堆读真值), 与 CPU truth 日志对拍。
             // run47 修复: 探针换回自有静态 S0 缓冲(NDC 顶点) —— 任务 4 起若沿用主管线的
@@ -427,9 +451,40 @@ public final class FarTerrainRenderer {
     private static final long STREAM_BUDGET_US = 1000L;
     private static final int STREAM_BUDGET_LOG_FRAMES = 10;
 
+    // ============ S2v2 任务 1: 贪心几何（DHVK_MESH 默认 greedy） ============
+    /** 贪心几何缓存（render 线程独占）。head 顶点 (x=-400) 使 shader 探针位移保持 0
+     *  （S0 哨兵语义不变：堆健康 → 位移 0；堆失效 → 几何整体跳 +400）；IBO 头 6 项全 0。 */
+    private static byte[] meshVbo;
+    private static byte[] meshIbo;
+    private static boolean meshBuilt;
+    private static int meshVertCount;
+    private static int meshIndexCount = 6;
+    private static long meshOx;
+    private static long meshOy;
+    private static long meshOz;
+    private static final CpuGreedyMeshExtractor MESH_EXTRACTOR = new CpuGreedyMeshExtractor();
+    /** 带构建等待帧数(带区 r256 探针未齐时每帧 head-only, 顺延构建)。 */
+    private static int meshWaitFrames;
+
+    static {
+        ByteBuffer head = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+        head.putFloat(-400f).putFloat(0f).putFloat(0f);
+        head.put((byte) 255).put((byte) 0).put((byte) 255).put((byte) 255);
+        meshVbo = head.array();
+        ByteBuffer headIbo = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < 6; i++) {
+            headIbo.putInt(0);
+        }
+        meshIbo = headIbo.array();
+    }
+
     /** 任务 4: 每帧合成远端几何 → 官方瞬态 ring 双 slice(VBO/IBO), 预算计时。
      *  失败 = 门槛不过 → mod 自禁用(明确日志, 不兜底)。 */
     private static void streamFrame(final CommandEncoder encoder) {
+        if ("greedy".equals(MESH_MODE)) {
+            meshFrame(encoder);
+            return;
+        }
         long t0 = System.nanoTime();
         ByteBuffer vbo = ByteBuffer.allocateDirect(VoxelWallSynthesizer.VBO_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         ByteBuffer ibo = ByteBuffer.allocateDirect(VoxelWallSynthesizer.IBO_BYTES).order(ByteOrder.LITTLE_ENDIAN);
@@ -469,6 +524,247 @@ public final class FarTerrainRenderer {
         while (q.size() > STREAM_RETENTION_FRAMES) {
             q.pollFirst();
         }
+    }
+
+    /** 每帧:缓存贪心几何字节上传官方瞬态 ring（同 S1 任务 4 纪律）；首次帧做 tile 构建 +
+     *  贪心提取（一次性，代价单独计时）。level/player 未就绪 = 本帧只出 head 顶点
+     *  （探针哨兵活体），构建顺延。失败 = 门槛不过 → mod 自禁用（不兜底）。 */
+    private static void meshFrame(final CommandEncoder encoder) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!meshBuilt && minecraft.level != null && minecraft.player != null) {
+            if (!bandRegionReady(minecraft)) {
+                // 带区 chunk 未加载齐(生成/流送中) → 本帧只出 head 顶点(探针哨兵活体), 构建顺延
+                if (meshWaitFrames == 0 || meshWaitFrames % 60 == 0) {
+                    LOGGER.info("[dhvk] s2v2 mesh band deferred: r256 探针未齐, waitFrames={}", meshWaitFrames);
+                }
+                meshWaitFrames++;
+            } else {
+                long b0 = System.nanoTime();
+                try {
+                    buildMeshBand(minecraft);
+                    meshBuilt = true;
+                } catch (RuntimeException e) {
+                    LOGGER.error("[dhvk] s2v2 mesh gate FAILED (tile build/extract) -> mod disabled: {}",
+                            e.toString());
+                    DhVkClient.disabled = true;
+                    return;
+                }
+                LOGGER.info("[dhvk] s2v2 mesh band built in {}us (waitFrames={}): origin=({}, {}, {}) "
+                                + "verts={} idx={} (VBO={}B, IBO={}B)",
+                        (System.nanoTime() - b0) / 1000L, meshWaitFrames, meshOx, meshOy, meshOz,
+                        meshVertCount, meshIndexCount, meshVbo.length, meshIbo.length);
+                meshWaitFrames = 0;
+            }
+        }
+        long t0 = System.nanoTime();
+        ByteBuffer vbo = ByteBuffer.allocateDirect(meshVbo.length).order(ByteOrder.LITTLE_ENDIAN);
+        vbo.put(meshVbo).rewind();
+        ByteBuffer ibo = ByteBuffer.allocateDirect(meshIbo.length).order(ByteOrder.LITTLE_ENDIAN);
+        ibo.put(meshIbo).rewind();
+        try {
+            TransientMemory tm = encoder.transientMemory();
+            streamVboSlice = tm.uploadGpu(vbo, 256L,
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+            streamIboSlice = tm.uploadGpu(ibo, 256L,
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+        } catch (RuntimeException e) {
+            LOGGER.error("[dhvk] s2v2 mesh stream gate FAILED (official transient ring upload) -> mod disabled: {}",
+                    e.toString());
+            DhVkClient.disabled = true;
+            return;
+        }
+        retain(STREAM_VBO_RETENTION, streamVboSlice);
+        retain(STREAM_IBO_RETENTION, streamIboSlice);
+        long costUs = (System.nanoTime() - t0) / 1000L;
+        if (frameCounter <= STREAM_BUDGET_LOG_FRAMES) {
+            LOGGER.info("[dhvk] s2v2 mesh stream frame={}: copy+upload={}us (VBO={}B off={}B, IBO={}B off={}B) "
+                            + "budget={}us {}",
+                    frameCounter, costUs, meshVbo.length, streamVboSlice.offset(),
+                    meshIbo.length, streamIboSlice.offset(),
+                    STREAM_BUDGET_US, costUs <= STREAM_BUDGET_US ? "OK" : "FAILED");
+        } else if (costUs > STREAM_BUDGET_US) {
+            LOGGER.error("[dhvk] s2v2 mesh stream budget gate FAILED: {}us > {}us (frame={})",
+                    costUs, STREAM_BUDGET_US, frameCounter);
+        }
+    }
+
+    /** 一个带原点的 tile + 其贪心四边形（构建期中间产物，render 线程独占）。 */
+    private record BandTile(BlockTile tile, long ox, long oy, long oz,
+            java.util.List<CpuGreedyMeshExtractor.Quad> quads) {
+    }
+
+    /**
+     * tile 带 + 贪心提取 + SoA→AoS 交错（一次性，构建期）。带 = 3×3×3 L0 tile
+     * （1024×1024×96 块）：XZ 中心 = 玩家所在 tile（或 DHVK_MESH_AT "x z" 覆写），
+     * Y 带 = [玩家-48, 玩家+48]。提取 = {@link CpuGreedyMeshExtractor#quads}
+     *（与 extract 的 SoA 子区窗口写同源，单测对拍；逐 tile quads/verts 日志行 =
+     * R-c 实测数据源，step 13 销账），随后交错为 GPU 侧 AoS 16B（pos f32×3 +
+     * color ubyte4 = 官方 POSITION_COLOR 形）+ u32 顺序 IBO。
+     */
+    private static void buildMeshBand(Minecraft minecraft) {
+        LevelBlockSource source = new LevelBlockSource(minecraft.level,
+                minecraft.getModelManager().getBlockStateModelSet());
+        MapTileTable table = new MapTileTable();
+        double[] center = effectiveMeshCenter(minecraft);
+        double px = center[0];
+        double pz = center[1];
+        // 近场豁免跟随相机(玩家肉身)而非带中心: 钉带模式(DHVK_MESH_AT)带钉死、玩家可在
+        // 任意处, 按带中心豁免会在带中心捅出 64 块半径隐形洞(run59/60: 中央 2×2 tile
+        // kept 塌方实锤); 常规模式带中心≈玩家所在 tile, 行为不变
+        double camX = minecraft.player.position().x();
+        double camY = minecraft.player.position().y();
+        double camZ = minecraft.player.position().z();
+        double py = camY;
+        meshOx = Math.floorDiv((long) px, 32) * 32;
+        meshOz = Math.floorDiv((long) pz, 32) * 32;
+        // Y 带锚定地形表面(WORLD_SURFACE 高度图)而非玩家肉身: 门槛满足时玩家可能仍在出生下落中
+        // (半空穿过 y∈[144,176) 区间即触发), 锚肉身会把带抬进天空 → 全空气带(run49/50/51 根因)
+        int surfaceY = minecraft.level.getHeight(
+                net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, (int) px, (int) pz);
+        meshOy = Math.floorDiv((long) surfaceY - 48L, 32) * 32;
+        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} -> bandY=[{}, {}]",
+                surfaceY, (int) py, meshOy, meshOy + 96L);
+        java.util.List<BandTile> band = new ArrayList<>();
+        int missing = 0;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = 0; dy <= 2; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    long tx = meshOx + dx * 32L;
+                    long ty = meshOy + dy * 32L;
+                    long tz = meshOz + dz * 32L;
+                    BlockTile tile = BlockTileBuilder.build(source, table, tx, ty, tz);
+                    if (!tile.hasData()) {
+                        missing++;
+                        continue;
+                    }
+                    java.util.List<CpuGreedyMeshExtractor.Quad> quads = MESH_EXTRACTOR.quads(tile);
+                    java.util.List<CpuGreedyMeshExtractor.Quad> kept =
+                            excludeNearField(quads, tx, ty, tz, camX, camY, camZ);
+                    LOGGER.info("[dhvk] s2v2 mesh tile ({}, {}, {}): quads={} kept={} verts={}",
+                            tx / 32, ty / 32, tz / 32, quads.size(), kept.size(), kept.size() * 6);
+                    band.add(new BandTile(tile, tx, ty, tz, kept));
+                }
+            }
+        }
+        int totalQuads = 0;
+        for (BandTile bt : band) {
+            totalQuads += bt.quads().size();
+        }
+        meshVertCount = 1 + totalQuads * 6;
+        if (meshVertCount > (1 << 20)) {
+            LOGGER.warn("[dhvk] R-c 告警: band verts={} > 1M（堆预算 28MiB 压力，任务1 step 13 销账）",
+                    meshVertCount);
+        }
+        // ② SoA 子区窗口写出（R-e）→ ③ 交错 AoS 16B + u32 顺序 IBO
+        int totalVerts = meshVertCount;
+        java.nio.ByteBuffer v = java.nio.ByteBuffer.allocate(16 + totalVerts * 16)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        v.put(meshVbo);
+        java.nio.ByteBuffer i = java.nio.ByteBuffer.allocate(4 * (6 + totalQuads * 6))
+                .order(ByteOrder.LITTLE_ENDIAN);
+        for (int k = 0; k < 6; k++) {
+            i.putInt(0);
+        }
+        int vIdx = 1;
+        for (BandTile bt : band) {
+            for (CpuGreedyMeshExtractor.Quad q : bt.quads()) {
+                float[] corners = CpuGreedyMeshExtractor.quadCorners(q);
+                byte cr;
+                byte cg;
+                byte cb;
+                if (q.tintRgb() == 0) {
+                    cr = cg = cb = (byte) 255;
+                } else {
+                    cr = (byte) ((q.tintRgb() >> 16) & 0xFF);
+                    cg = (byte) ((q.tintRgb() >> 8) & 0xFF);
+                    cb = (byte) (q.tintRgb() & 0xFF);
+                }
+                for (int k2 = 0; k2 < 6; k2++) {
+                    v.putFloat((float) (bt.ox() + corners[k2 * 3]));
+                    v.putFloat((float) (bt.oy() + corners[k2 * 3 + 1]));
+                    v.putFloat((float) (bt.oz() + corners[k2 * 3 + 2]));
+                    v.put(cr).put(cg).put(cb).put((byte) 255);
+                }
+                for (int k3 = 0; k3 < 6; k3++) {
+                    i.putInt(vIdx++);
+                }
+            }
+        }
+        meshVbo = v.array();
+        meshIbo = i.array();
+        meshIndexCount = i.position() / 4;
+        if (missing > 0) {
+            LOGGER.info("[dhvk] s2v2 mesh band: {}/27 tiles missing (从未产生 → 空气, 规格 §4.2)", missing);
+        }
+    }
+
+    /**
+     * 带区就绪门槛: 以有效带中心(玩家位置或 DHVK_MESH_AT 覆写, 见 {@link #effectiveMeshCenter(Minecraft)})
+     * 为中心、半径 256 块的 9 探针(中心 + 八方, 对角 ÷√2 归一)全部
+     * {@code ChunkStatus.FULL} 才算"带区加载齐"(带 XZ 半宽 512 块; 256 覆盖带内远场主体,
+     * 远角缺数据按规格 §4.2 缺 = 空气)。未齐 = 构建顺延, 期间每帧只出 head 顶点。
+     * 钉带模式(步13, DHVK_MESH_AT)探针绕带中心: 玩家尚在出生点时门槛自动顺延,
+     * 与玩家到位自同步, 杜绝出生点亮绿灯→带区全未加载→空带。
+     */
+    private static boolean bandRegionReady(Minecraft minecraft) {
+        double[] center = effectiveMeshCenter(minecraft);
+        double px = center[0];
+        double pz = center[1];
+        double[] dx = {0, 256, 0, -256, 181, 181, -181, -181, 0};
+        double[] dz = {0, 0, 256, 0, 181, -181, -181, 181, 0};
+        for (int i = 0; i < 9; i++) {
+            // 26.2 定谳: isLoaded = 区块存在(任意 status), 未完成区块 getBlockState 返回空气
+            // → 门槛按 ChunkStatus.FULL 判(vanilla loadedAnd* 同型); run50 全空气根因
+            int sx = (int) (px + dx[i]) >> 4;
+            int sz = (int) (pz + dz[i]) >> 4;
+            if (minecraft.level.getChunkSource().getChunk(sx, sz, ChunkStatus.FULL, false) == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** 有效带中心 XZ: 玩家位置, 或 {@code DHVK_MESH_AT "x z"} 覆写(步13 四地形预算钉点)。
+     *  构建与门槛共用, 保证两侧对同一中心; 钉带模式门槛绕带中心等待带区区块加载
+     *  (run59 修: 玩家在出生点、带钉在数百块外时, 旧"绕玩家"探针会在出生点亮绿灯
+     *  构建空带)。 */
+    private static double[] effectiveMeshCenter(Minecraft minecraft) {
+        String at = DhVkClient.meshAt();
+        if (at != null) {
+            String[] parts = at.trim().split("\\s+");
+            double x = Double.parseDouble(parts[0]);
+            return new double[] {x, parts.length > 1 ? Double.parseDouble(parts[1]) : x};
+        }
+        return new double[] {minecraft.player.position().x(), minecraft.player.position().z()};
+    }
+
+    /** 近场豁免半径(块): 远带共享官方相机(继承 S1), 玩家近处几何会投成糊屏巨面 ——
+     *  角点世界坐标全部落在玩家外该半径之外的 quad 才入远带(近 pass 纹理地形覆盖近区)。 */
+    private static final int MESH_EXCLUDE_RADIUS = 64;
+
+    /** 近场豁免(跨界面整面舍弃, 无视觉洞): 与交错路径同一 quadCorners 角点源。 */
+    private static java.util.List<CpuGreedyMeshExtractor.Quad> excludeNearField(
+            java.util.List<CpuGreedyMeshExtractor.Quad> quads,
+            long ox, long oy, long oz, double px, double py, double pz) {
+        java.util.List<CpuGreedyMeshExtractor.Quad> out = new java.util.ArrayList<>();
+        float r2 = MESH_EXCLUDE_RADIUS * MESH_EXCLUDE_RADIUS;
+        for (CpuGreedyMeshExtractor.Quad q : quads) {
+            float[] c = CpuGreedyMeshExtractor.quadCorners(q);
+            boolean far = true;
+            for (int k = 0; k < 4 && far; k++) {
+                // quadCorners 序 = p0,p1,p2,p0,p2,p3 → 唯一角点 p0/p1/p2/p3 段首下标 0/3/6/15
+                int base = (k == 3) ? 15 : k * 3;
+                double wx = ox + c[base];
+                double wy = oy + c[base + 1];
+                double wz = oz + c[base + 2];
+                double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py) + (wz - pz) * (wz - pz);
+                far = d2 >= r2;
+            }
+            if (far) {
+                out.add(q);
+            }
+        }
+        return out;
     }
 
     /** run22: 每帧在 encoder 当前 CBU 上: ① 对 6 个绑定(VBO/IBO + Projection/

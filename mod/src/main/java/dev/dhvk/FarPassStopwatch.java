@@ -150,10 +150,10 @@ public final class FarPassStopwatch {
             if (submitIndex < 0L || counter < submitIndex) {
                 continue;   // 已读回 / GPU 侧未完成
             }
-            int slot = REG_SLOT[i];
+            int slot = REG_SLOT[i];   // run62 起存查询对基址(偶数, = 帧奇偶×2)
             long cpuNanos = REG_CPU_NANOS[i];
-            long start = readQuery(slot * 2);
-            long end = readQuery(slot * 2 + 1);
+            long start = readQuery(slot);
+            long end = readQuery(slot + 1);
             REG_SUBMIT_INDEX[i] = -1L;   // 读回即失效(防幻影锚点重放)
             if (start <= 0L || end <= 0L || end < start) {
                 LOGGER.info("[dhvk] farpass telemetry: pass=unreadable (start={}, end={}, slot={})",
@@ -178,6 +178,23 @@ public final class FarPassStopwatch {
         emit(encoder, 1, false);
     }
 
+    /** 当前帧查询对基址(偶数):run62/64 修 —— 在途帧各用独立查询对(帧奇偶×2, 4 查询窗口),
+     *  帧 N 的读回不会再撞上帧 N+1 的重置/覆写; 同一对 2 帧后才复用, 且 CBU 侧重置
+     *  (resetFrameQueries, pass 外)按提交序在同队列上晚于帧 N 的写入执行, 无竞态。 */
+    private static int curSlotBase = 0;
+
+    /** run64: 重置本帧查询对 —— CBU 侧 vkCmdResetQueryPool 必须于 render pass 实例外
+     *  发行(VUID-vkCmdResetQueryPool-commandBuffer-00001, run63 VVL 实锤); 调用点 =
+     *  createRenderPass 之前(CBU 已在录制, 尚无 render pass)。与两帧前同对的 GPU 写入
+     *  按提交序串行 → 消除 run62 "query not reset + present 脱钩" 崩溃链。 */
+    public static void resetFrameQueries(DhvkCommandEncoder encoder) {
+        if (pool == null || !envOn()) {
+            return;
+        }
+        curSlotBase = (regCount & 1) * 2;
+        encoder.dhvkResetQueries(((DhvkQueryPool) (Object) pool).dhvkHandle(), curSlotBase, 2);
+    }
+
     private static void emit(DhvkCommandEncoder encoder, int slot, boolean register) {
         if (pool == null || !envOn()) {
             return;
@@ -187,12 +204,12 @@ public final class FarPassStopwatch {
         if (semaphore == 0L || submitIndex == 0L) {
             return;
         }
-        encoder.dhvkWriteTimestamp(pool, slot);
+        encoder.dhvkWriteTimestamp(pool, curSlotBase + slot);
         if (register) {
             // 奇偶双槽(官方在途上限):奇偶覆盖 = 采样缺失,非失败(遥测是采样器)
             int i = regCount & 1;
             REG_SUBMIT_INDEX[i] = submitIndex;
-            REG_SLOT[i] = slot;
+            REG_SLOT[i] = curSlotBase;
             REG_CPU_NANOS[i] = System.nanoTime();
             regCount++;
         }

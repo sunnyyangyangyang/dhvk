@@ -35,6 +35,16 @@ public abstract class CommandEncoderDhvkProbeMixin implements DhvkCommandEncoder
     }
 
     @Override
+    public void dhvkResetQueries(long pool, int first, int count) {
+        // run64 修: 26.2 createCommandEncoder() 返回的是本 wrapper(backend 私有字段)——
+        // 接口注入在 wrapper 与 backend 两层, 新方法两层都须实现, 否则 wrapper 侧
+        // AbstractMethodError(run64 首帧崩溃实锤)
+        if (this.backend instanceof DhvkCommandEncoder probe) {
+            probe.dhvkResetQueries(pool, first, count);
+        }
+    }
+
+    @Override
     public long dhvkSubmitSemaphore() {
         return this.backend instanceof DhvkCommandEncoder probe ? probe.dhvkSubmitSemaphore() : 0L;
     }

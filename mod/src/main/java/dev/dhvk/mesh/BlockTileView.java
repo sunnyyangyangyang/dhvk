@@ -24,4 +24,17 @@ public interface BlockTileView {
 
     /** 该 tile 是否有真实数据；false = 从未产生（规格 §4.2 缺数据规则前置）。 */
     boolean hasData();
+
+    /**
+     * 邻采样（margin 裁决，笔记 §10.1）：邻 tile (dx, dy, dz) 的 tile 局部 (x, y, z)。
+     * (dx, dy, dz) = (0, 0, 0) 时即本 tile 本体。邻 tile 缺失（null 或 hasData()=false）
+     * 返回 false——“邻 tile 从未产生，该侧按空气”。
+     */
+    boolean isSolidNeighbor(int dx, int dy, int dz, int x, int y, int z);
+
+    /** 邻采样：邻 tile 的精灵 ID（缺失 = 0）。 */
+    int spriteIdNeighbor(int dx, int dy, int dz, int x, int y, int z);
+
+    /** 邻采样：邻 tile 的染色（缺失 = 0）。 */
+    int tintRgbNeighbor(int dx, int dy, int dz, int x, int y, int z);
 }

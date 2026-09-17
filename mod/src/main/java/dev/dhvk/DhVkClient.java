@@ -78,6 +78,19 @@ public final class DhVkClient implements ClientModInitializer {
         return !"1".equals(System.getenv("DHVK_NOPROBE"));
     }
 
+    /** S2v2 任务 1: 远带几何源因子。默认 = greedy（CPU 贪心网格）；
+     *  DHVK_MESH=height = S1 合成 ring 路径（留至贪心 spike 过闸后退役）。 */
+    public static String meshMode() {
+        String m = System.getenv("DHVK_MESH");
+        return (m == null || m.isEmpty()) ? "greedy" : m;
+    }
+
+    /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
+     *  用途: 出生点与目验目标 chunk 不一致时钉住 tile 带。 */
+    public static String meshAt() {
+        return System.getenv("DHVK_MESH_AT");
+    }
+
     /** run20: VkShaderDescriptorSetAndBindingMappingInfoEXT 节点指针(native heap 永生, 0 = 尚未建)。
      *  由 ensureHeapSurgery 建好并置位; 管线销毁晚于我们的 dispose, 节点不回收。 */
     public static volatile long mappingInfoNode = 0L;
@@ -124,9 +137,10 @@ public final class DhVkClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("[dhvk] client entrypoint initialized (mc 26.2, fabric)");
-        LOGGER.info("[dhvk] far_terrain gate: wall={}, probe={} (DHVK_NOWALL={}, DHVK_NOPROBE={})",
-                wallEnvOn(), probeEnvOn(),
-                System.getenv("DHVK_NOWALL"), System.getenv("DHVK_NOPROBE"));
+        LOGGER.info("[dhvk] far_terrain gate: wall={}, probe={}, mesh={} (DHVK_NOWALL={}, "
+                        + "DHVK_NOPROBE={}, DHVK_MESH={})",
+                wallEnvOn(), probeEnvOn(), meshMode(),
+                System.getenv("DHVK_NOWALL"), System.getenv("DHVK_NOPROBE"), System.getenv("DHVK_MESH"));
         LOGGER.info("[dhvk] vk handles: {} (capture 在设备创建时刻, 首帧前必就绪)", VkHandles.format());
     }
 

@@ -27,6 +27,7 @@ public final class HeapSubregion {
 
     private final long baseOffset;
     private final int vertexCapacity;
+    private final ByteBuffer window;
     private final int posOffset;
     private final int colorOffset;
     private final int uvAbsOffset;
@@ -39,6 +40,17 @@ public final class HeapSubregion {
     public HeapSubregion(long baseOffset, int vertexCapacity, int posOffset, int colorOffset,
             int uvAbsOffset, int spriteOffset, int aoOffset, int tintOffset,
             int normalOffset, int indexOffset) {
+        this(baseOffset, vertexCapacity, posOffset, colorOffset, uvAbsOffset, spriteOffset,
+                aoOffset, tintOffset, normalOffset, indexOffset, null);
+    }
+
+    /**
+     * 全参构造：window = 覆盖整个子区的 host-visible 写缓冲（缓冲下标 0 = baseOffset；
+     * 字节序由调用方负责，生产 host 映射 = 小端）。null = 尚未接线（writeWindow() 抛异常）。
+     */
+    public HeapSubregion(long baseOffset, int vertexCapacity, int posOffset, int colorOffset,
+            int uvAbsOffset, int spriteOffset, int aoOffset, int tintOffset,
+            int normalOffset, int indexOffset, ByteBuffer window) {
         this.baseOffset = baseOffset;
         this.vertexCapacity = vertexCapacity;
         this.posOffset = posOffset;
@@ -49,6 +61,7 @@ public final class HeapSubregion {
         this.tintOffset = tintOffset;
         this.normalOffset = normalOffset;
         this.indexOffset = indexOffset;
+        this.window = window;
     }
 
     /** resource heap 内偏移（字节）。 */
@@ -102,10 +115,15 @@ public final class HeapSubregion {
     }
 
     /**
-     * 子区写窗口（供提取器经 host-visible 映射直写；任务1 接线时与堆映射层对接）。
-     * 接口先立，实现随 Task 1 的堆子区规划落。
+     * 子区写窗口（供提取器经 host-visible 映射直写；生产 = 堆映射切片，测试 = 内存缓冲）。
+     *
+     * <p>契约：返回缓冲覆盖整个子区，下标 0 = baseOffset；写方用绝对偏移
+     * {@code regionOffset() - baseOffset()} 做 putFloat/putInt（不用推进 position 的相对写）。
      */
     public ByteBuffer writeWindow() {
-        throw new UnsupportedOperationException("Task 1: 随堆子区规划实现");
+        if (window == null) {
+            throw new UnsupportedOperationException("Task 1: 随堆子区规划实现");
+        }
+        return window;
     }
 }
