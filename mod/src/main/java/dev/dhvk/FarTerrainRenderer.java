@@ -622,6 +622,7 @@ public final class FarTerrainRenderer {
     private static int bda() {
         return DhVkClient.surgeryEnabled() ? DeviceAddressUsage.DEVICE_ADDRESS : 0;
     }
+
     /** 3 帧保留窗(与 DT ring 3-buffer 旋转同节奏; 官方析构队列按 submit 数回收块,
      *  保留窗只是显式防 GPU in-flight 读-CPU 再分配的引用窗)。 */
     private static final int STREAM_RETENTION_FRAMES = 3;
@@ -661,6 +662,7 @@ public final class FarTerrainRenderer {
         for (int i = 0; i < 6; i++) {
             headIbo.putInt(0);
         }
+
         meshIbo = headIbo.array();
     }
 
@@ -815,8 +817,10 @@ public final class FarTerrainRenderer {
         // cull off 双面可见; /tp 1648 130 336 朝北(-z)即正对碑面。
         if (DhVkClient.beaconOn()) {
             float z = 248.0f;
-            float x0 = 1571.0f, x1 = 1747.0f;
-            float y0 = 40.0f, y1 = 320.0f;
+            float x0 = 1571.0f;
+            float x1 = 1747.0f;
+            float y0 = 40.0f;
+            float y1 = 320.0f;
             byte[] vb = new byte[4 * 16];
             java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(vb).order(java.nio.ByteOrder.LITTLE_ENDIAN);
             float[][] corners = {{x0, y0, z}, {x0, y1, z}, {x1, y1, z}, {x1, y0, z}};
@@ -831,8 +835,9 @@ public final class FarTerrainRenderer {
             }
             meshIbo = ib.array();
             meshIndexCount = 6;
-            LOGGER.info("[dhvk] beacon wall: x[{},{}] z={} y[{},{}] 纯红 176x280 石碑, 观景点 (1648,130,336) 正北 88 块 — /tp 1648 130 336 朝北(-z)即正对碑面",
+            LOGGER.info("[dhvk] beacon wall: x[{},{}] z={} y[{},{}] 纯红 176x280 石碑, 观景点 (1648,130,336) 正北 88 块",
                     x0, x1, z, y0, y1);
+            LOGGER.info("[dhvk] beacon wall: /tp 1648 130 336 朝北(-z)即正对碑面");
             return;
         }
         LevelBlockSource source = new LevelBlockSource(minecraft.level,
@@ -1411,64 +1416,64 @@ public final class FarTerrainRenderer {
         // 本任务复用 S0 GpuBuffer 当 arena 雏形, 只读其设备地址)。
         // 移植态 (手术关): 设备无 descriptor heap 扩展, 整块跳过 —— 原生栈不需要堆。
         if (DhVkClient.surgeryEnabled()) {
-        if (VkHandles.deviceWrapper == null) {
-            throw new IllegalStateException("[dhvk] device wrapper not captured before heap init");
-        }
-        heap = new DescriptorHeap(CELL_CAPACITY, 2);
-        // run17 规避(VVL 1.4.341 的 1 代 vkGetBufferDeviceAddress pNext walker 内部悬空指针 SEGV):
-        // vbo/ibo 被 VMA 先 bind 躲不开 → 走 2 代 vkGetBufferDeviceAddress2(VVL 独立验证函数,
-        // pInfo 空链, 1 代 walker 够不着)
-        vboDeviceAddress = bdaAddress2(((VulkanGpuBuffer) vertexBuffer).vkBuffer());
-        iboDeviceAddress = bdaAddress2(((VulkanGpuBuffer) indexBuffer).vkBuffer());
-        heap.writeBufferDescriptor(0, 0, vboDeviceAddress, vertexBuffer.size());
-        heap.writeBufferDescriptor(0, 1, iboDeviceAddress, indexBuffer.size());
-        LOGGER.info("[dhvk] wall geometry registered in descriptor heap (cell 0: "
-                + "vbo@0x{} len={}B, ibo@0x{} len={}B)",
-                vboDeviceAddress, vertexBuffer.size(), iboDeviceAddress, indexBuffer.size());
+            if (VkHandles.deviceWrapper == null) {
+                throw new IllegalStateException("[dhvk] device wrapper not captured before heap init");
+            }
+            heap = new DescriptorHeap(CELL_CAPACITY, 2);
+            // run17 规避(VVL 1.4.341 的 1 代 vkGetBufferDeviceAddress pNext walker 内部悬空指针 SEGV):
+            // vbo/ibo 被 VMA 先 bind 躲不开 → 走 2 代 vkGetBufferDeviceAddress2(VVL 独立验证函数,
+            // pInfo 空链, 1 代 walker 够不着)
+            vboDeviceAddress = bdaAddress2(((VulkanGpuBuffer) vertexBuffer).vkBuffer());
+            iboDeviceAddress = bdaAddress2(((VulkanGpuBuffer) indexBuffer).vkBuffer());
+            heap.writeBufferDescriptor(0, 0, vboDeviceAddress, vertexBuffer.size());
+            heap.writeBufferDescriptor(0, 1, iboDeviceAddress, indexBuffer.size());
+            LOGGER.info("[dhvk] wall geometry registered in descriptor heap (cell 0: "
+                    + "vbo@0x{} len={}B, ibo@0x{} len={}B)",
+                    vboDeviceAddress, vertexBuffer.size(), iboDeviceAddress, indexBuffer.size());
 
-        // run29 哨兵: 管线创建前把六槽**全部**填成哨兵描述符(槽 i 行0.x = i+1)——
-        // 创建时刻堆表全非零、每槽可识别。ensureHeapSurgery 在本方法之后运行,
-        // 哨兵先于任何管线编译落表; 之后每帧 dhvkBindHeap 将六槽重写为真实描述符。
-        ByteBuffer sentinel = ByteBuffer.allocateDirect(6 * 16 * 4).order(ByteOrder.LITTLE_ENDIAN);
-        for (int i = 0; i < 6; i++) {
-            float head = (float) (i + 1);
-            int from;
-            if (i == 2 || i == 3) {
-                // run34: 近单位阵(row0.x = head)—— 主墙在哨兵矩阵下变换仍正常
-                sentinel.putFloat(head).putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
-                sentinel.putFloat(0.0F).putFloat(1.0F).putFloat(0.0F).putFloat(0.0F);
-                sentinel.putFloat(0.0F).putFloat(0.0F).putFloat(1.0F).putFloat(0.0F);
-                sentinel.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F).putFloat(1.0F);
-                from = 16;
-            } else if (i == 4) {
-                // run34: fogStart = head, fogEnd 大值 —— 主墙不被哨兵雾染白
-                sentinel.putFloat(head);
-                sentinel.putFloat(65536.0F);
-                from = 2;
-            } else {
-                sentinel.putFloat(head);
-                from = 1;
+            // run29 哨兵: 管线创建前把六槽**全部**填成哨兵描述符(槽 i 行0.x = i+1)——
+            // 创建时刻堆表全非零、每槽可识别。ensureHeapSurgery 在本方法之后运行,
+            // 哨兵先于任何管线编译落表; 之后每帧 dhvkBindHeap 将六槽重写为真实描述符。
+            ByteBuffer sentinel = ByteBuffer.allocateDirect(6 * 16 * 4).order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < 6; i++) {
+                float head = (float) (i + 1);
+                int from;
+                if (i == 2 || i == 3) {
+                    // run34: 近单位阵(row0.x = head)—— 主墙在哨兵矩阵下变换仍正常
+                    sentinel.putFloat(head).putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
+                    sentinel.putFloat(0.0F).putFloat(1.0F).putFloat(0.0F).putFloat(0.0F);
+                    sentinel.putFloat(0.0F).putFloat(0.0F).putFloat(1.0F).putFloat(0.0F);
+                    sentinel.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F).putFloat(1.0F);
+                    from = 16;
+                } else if (i == 4) {
+                    // run34: fogStart = head, fogEnd 大值 —— 主墙不被哨兵雾染白
+                    sentinel.putFloat(head);
+                    sentinel.putFloat(65536.0F);
+                    from = 2;
+                } else {
+                    sentinel.putFloat(head);
+                    from = 1;
+                }
+                for (int j = from; j < 16; j++) {
+                    sentinel.putFloat(0.0F);
+                }
             }
-            for (int j = from; j < 16; j++) {
-                sentinel.putFloat(0.0F);
+            sentinel.rewind();
+            sentinelBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_sentinel",
+                    GpuBuffer.USAGE_UNIFORM | bda(), sentinel);
+            sentinelBase = bdaAddress2(((VulkanGpuBuffer) sentinelBuffer).vkBuffer());
+            for (int i = 0; i < 6; i++) {
+                heap.writeBufferDescriptor(i / 2, i % 2, sentinelBase + (long) i * 64, 64L);
             }
-        }
-        sentinel.rewind();
-        sentinelBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_sentinel",
-                GpuBuffer.USAGE_UNIFORM | bda(), sentinel);
-        sentinelBase = bdaAddress2(((VulkanGpuBuffer) sentinelBuffer).vkBuffer());
-        for (int i = 0; i < 6; i++) {
-            heap.writeBufferDescriptor(i / 2, i % 2, sentinelBase + (long) i * 64, 64L);
-        }
-        // run35 先登记后手写: 哨兵 buffer 一次性经 vkWriteResourceDescriptorsEXT 登记进
-        // 驱动内部 BDA 表(scratch 槽 (4,0), 静态映射不引用 → 永不被取数), 之后表槽里的
-        // 手写裸字节才有'认识的地址'可解码(run34 全黑头号嫌疑 = 未登记地址按零解码)。
-        heap.writeBufferDescriptor(4, 0, sentinelBase, 384L, true);
-        LOGGER.info("[dhvk] run35 sentinel registered via API: 0x{} (384B) -> scratch slot(4,0)",
-                Long.toHexString(sentinelBase));
-        LOGGER.info("[dhvk] run29 sentinel armed: all 6 table slots = sentinel descriptors "
-                + "(row0.x = slot+1, sentinel@0x{}), creation-time table fully non-zero; "
-                + "per-frame rewrite to real descriptors happens in dhvkBindHeap", sentinelBase);
+            // run35 先登记后手写: 哨兵 buffer 一次性经 vkWriteResourceDescriptorsEXT 登记进
+            // 驱动内部 BDA 表(scratch 槽 (4,0), 静态映射不引用 → 永不被取数), 之后表槽里的
+            // 手写裸字节才有'认识的地址'可解码(run34 全黑头号嫌疑 = 未登记地址按零解码)。
+            heap.writeBufferDescriptor(4, 0, sentinelBase, 384L, true);
+            LOGGER.info("[dhvk] run35 sentinel registered via API: 0x{} (384B) -> scratch slot(4,0)",
+                    Long.toHexString(sentinelBase));
+            LOGGER.info("[dhvk] run29 sentinel armed: all 6 table slots = sentinel descriptors "
+                    + "(row0.x = slot+1, sentinel@0x{}), creation-time table fully non-zero; "
+                    + "per-frame rewrite to real descriptors happens in dhvkBindHeap", sentinelBase);
         }
     }
 
