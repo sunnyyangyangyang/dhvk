@@ -85,6 +85,21 @@ public final class DhVkClient implements ClientModInitializer {
         return "1".equals(System.getenv("DHVK_SYNTRING"));
     }
 
+    /** 目验收调试因子: DHVK_MESH_LIFT=N(块) → 远带 Y 窗整体上移 N 块(生产默认 0)。
+     *  用途: 平坦地形上带面与近程地形共面 → 侧视不可见(深度平局近程胜); 抬升后纸片
+     *  高出草海, 地面视角即可目验。只动 Y 锚, 不碰生产几何。 */
+    public static int meshLift() {
+        String m = System.getenv("DHVK_MESH_LIFT");
+        if (m == null || m.isEmpty()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(m);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
      *  用途: 出生点与目验目标 chunk 不一致时钉住 tile 带。 */
     public static String meshAt() {

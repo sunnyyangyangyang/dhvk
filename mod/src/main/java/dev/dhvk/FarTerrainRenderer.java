@@ -624,9 +624,11 @@ public final class FarTerrainRenderer {
         // (半空穿过 y∈[144,176) 区间即触发), 锚肉身会把带抬进天空 → 全空气带(run49/50/51 根因)
         int surfaceY = minecraft.level.getHeight(
                 net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, (int) px, (int) pz);
-        meshOy = Math.floorDiv((long) surfaceY - 48L, 32) * 32;
-        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} -> bandY=[{}, {}]",
-                surfaceY, (int) py, meshOy, meshOy + 96L);
+        // 目验收调试: DHVK_MESH_LIFT=N → Y 窗整体上移(纸片抬出草海, 地面视角可辨); 生产默认 0
+        int lift = DhVkClient.meshLift();
+        meshOy = Math.floorDiv((long) surfaceY - 48L + lift, 32) * 32;
+        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} lift={} -> bandY=[{}, {}]",
+                surfaceY, (int) py, lift, meshOy, meshOy + 96L);
         java.util.List<BandTile> band = new ArrayList<>();
         int missing = 0;
         for (int dx = -1; dx <= 1; dx++) {
