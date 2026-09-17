@@ -181,11 +181,47 @@ public final class DhVkClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         LOGGER.info("[dhvk] client entrypoint initialized (mc 26.2, fabric)");
+        // run133: 实验期全量日志 — 26.2 客户端日志链 = slf4j → log4j-slf4j2 → Log4j2 (工厂探针实锤),
+        // 默认配置只放行到 INFO。DHVK_FULLLOG=1: 根 logger 与全部 appender 阈值压到 DEBUG,
+        // gradle $LOG 即游戏全量日志 (console+VVL+本模组), 实验排障用。
+        if ("1".equals(System.getenv("DHVK_FULLLOG"))) {
+            dhvkEnableFullLogging();
+        }
         LOGGER.info("[dhvk] far_terrain gate: wall={}, probe={}, synth={} (DHVK_NOWALL={}, "
                         + "DHVK_NOPROBE={}, DHVK_SYNTRING={})",
                 wallEnvOn(), probeEnvOn(), synthRingOn(),
                 System.getenv("DHVK_NOWALL"), System.getenv("DHVK_NOPROBE"), System.getenv("DHVK_SYNTRING"));
         LOGGER.info("[dhvk] vk handles: {} (capture 在设备创建时刻, 首帧前必就绪)", VkHandles.format());
+    }
+
+    /**
+     * run133: 全量日志实验开关 — 2026 重建版 log4j-core API: core.Logger 是 Supplier<LoggerConfig>,
+     * appender 的级别/过滤器挂在 LoggerConfig 的 AppenderRef 上 (Appender 接口本身无过滤)。
+     * 操作: 根 LoggerConfig 级别压 DEBUG + 全部 AppenderRef 重写为 (level=DEBUG, filter=null)。
+     */
+    private static void dhvkEnableFullLogging() {
+        try {
+            final org.apache.logging.log4j.Level dbg = org.apache.logging.log4j.Level.DEBUG;
+            final org.apache.logging.log4j.core.LoggerContext ctx =
+                    (org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+            final org.apache.logging.log4j.core.Logger coreRoot =
+                    (org.apache.logging.log4j.core.Logger) ctx.getRootLogger();
+            final org.apache.logging.log4j.core.config.LoggerConfig rootCfg = coreRoot.get();
+            rootCfg.setLevel(dbg);
+            final java.util.Map<String, org.apache.logging.log4j.core.Appender> apps = rootCfg.getAppenders();
+            final StringBuilder names = new StringBuilder();
+            for (final org.apache.logging.log4j.core.config.AppenderRef ref
+                    : new java.util.ArrayList<>(rootCfg.getAppenderRefs())) {
+                names.append(ref.getRef()).append(' ');
+                rootCfg.removeAppender(ref.getRef());
+                rootCfg.addAppender(apps.get(ref.getRef()), dbg, null);
+            }
+            ctx.updateLoggers();
+            LOGGER.info("[dhvk] FULLLOG on: root={} appenders=[{}] → 全量 DEBUG 日志放行",
+                    rootCfg.getLevel(), names);
+        } catch (Throwable t) {
+            LOGGER.warn("[dhvk] FULLLOG switch failed: {}", t.toString());
+        }
     }
 
     /** 负门槛测试开关: runClient 前设 DHVK_NOSURGERY=1 即跳过设备手术(验证"不兜底"路径)。 */

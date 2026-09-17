@@ -46,11 +46,15 @@ public class MixinLevelRendererDhvk {
             LOGGER.info("[dhvk] fulllog probe: defaultLogLevel={} (debug 行见下条, 出现即全量生效)",
                     System.getProperty("org.slf4j.simpleLogger.defaultLogLevel"));
             LOGGER.debug("[dhvk] fulllog DEBUG-level probe frame={}", dhvkHeadFrames);
-            // run131: 游戏内 mod classloader 看不到 slf4j-simple 实现类(CNFE 实锤) →
-            // 一律走 platform CL 取根加载器的 provider 内部配置
+            // run132: platform CL 也 CNFE → 改从 logger 工厂自身定位: 工厂类所在 CL+jar 才是 provider 真身
             try {
-                final ClassLoader root = ClassLoader.getPlatformClassLoader();
-                final Class<?> cfg = Class.forName("org.slf4j.simple.SimpleLoggerConfiguration", true, root);
+                final Object factory = org.slf4j.LoggerFactory.getILoggerFactory();
+                final ClassLoader pcl = factory.getClass().getClassLoader();
+                LOGGER.info("[dhvk] fulllog factory: {} (CL={}) from {}",
+                        factory.getClass().getName(),
+                        String.valueOf(pcl),
+                        factory.getClass().getProtectionDomain().getCodeSource().getLocation());
+                final Class<?> cfg = Class.forName("org.slf4j.simple.SimpleLoggerConfiguration", true, pcl);
                 final Object inst = cfg.getField("CONFIG_PARAMS").get(null);
                 LOGGER.info("[dhvk] fulllog cfg: defaultLogLevel={} logFile={} showDateTime={} showThread={}",
                         dhvkField(cfg, "defaultLogLevel", inst), dhvkField(cfg, "logFile", inst),
