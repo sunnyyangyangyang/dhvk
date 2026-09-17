@@ -29,7 +29,9 @@ void main() {
     // 与 S0 像素级一致; 堆失效(描述符读 0)→ 墙 A 瞬移到世界原点, 肉眼不可误判。
     float probe = u_vbo_phantom.pad.x + u_ibo_phantom.pad.x;
     canary = probe;
-    vec3 pos = Position + vec3(probe + 400.0, 0.0, 0.0);
+    // run83: 位移与绘制路径解耦 —— canary 破损不再把几何传送进雾里,
+    // 纸片留在原地用颜色自报(健康=原色, 越界=青), 位置本身永远正确
+    vec3 pos = Position;
     gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
     vertexSphericalDistance = fog_spherical_distance(pos);
     vertexCylindricalDistance = fog_cylindrical_distance(pos);
