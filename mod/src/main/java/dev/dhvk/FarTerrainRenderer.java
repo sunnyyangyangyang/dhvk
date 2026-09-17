@@ -1374,7 +1374,9 @@ public final class FarTerrainRenderer {
         LOGGER.info("[dhvk] run26 probe2 buffers created (halves: vbo=64B x2, ibo=12B x2)");
 
         // S1 任务 2: 描述符堆 = 墙几何地址的承载体(持久堆; 任务 3 才换正式 arena,
-        // 本任务复用 S0 GpuBuffer 当 arena 雏形, 只读其设备地址)
+        // 本任务复用 S0 GpuBuffer 当 arena 雏形, 只读其设备地址)。
+        // 移植态 (手术关): 设备无 descriptor heap 扩展, 整块跳过 —— 原生栈不需要堆。
+        if (DhVkClient.surgeryEnabled()) {
         if (VkHandles.deviceWrapper == null) {
             throw new IllegalStateException("[dhvk] device wrapper not captured before heap init");
         }
@@ -1433,6 +1435,7 @@ public final class FarTerrainRenderer {
         LOGGER.info("[dhvk] run29 sentinel armed: all 6 table slots = sentinel descriptors "
                 + "(row0.x = slot+1, sentinel@0x{}), creation-time table fully non-zero; "
                 + "per-frame rewrite to real descriptors happens in dhvkBindHeap", sentinelBase);
+        }
     }
 
     /** 2 代 vkGetBufferDeviceAddress(run17 笔记: VVL 1.4.341 的 1 代 walker 有内部悬空指针 bug)。 */
