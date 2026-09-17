@@ -13,6 +13,7 @@
     "VulkanRenderPipelineSurgeryMixin",
     "RenderPassUniformProbeMixin",
     "LevelRendererFarPassMixin",
+    "MixinLevelRendererDhvk",
     "ClientPackSourceDevResourcesMixin",
     "RenderSystemShutdownMixin",
     "VulkanRenderPassPushCancelMixin",

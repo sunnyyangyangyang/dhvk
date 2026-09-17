@@ -115,7 +115,12 @@ public final class DhVkClient implements ClientModInitializer {
      *  重写), UBO 全走官方原生描述符通道(DH 26.2 零手术姿势); 设备层手术保持开启
      *  (堆扩展是超集, 官方后端无害) —— 区别于 DHVK_NOSURGERY 那把关全部层级的总闸。 */
     public static boolean surgeryOff() {
-        return "1".equals(System.getenv("DHVK_NOMAPPING"));
+        return !surgeryEnabled();
+    }
+
+    /** 移植后默认走 DH 式 TAIL 钩子帧路径; DHVK_OLDPASS=1 回开旧帧图 pass 做 A/B。 */
+    public static boolean oldPassOn() {
+        return "1".equals(System.getenv("DHVK_OLDPASS"));
     }
 
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
@@ -179,7 +184,9 @@ public final class DhVkClient implements ClientModInitializer {
 
     /** 负门槛测试开关: runClient 前设 DHVK_NOSURGERY=1 即跳过设备手术(验证"不兜底"路径)。 */
     public static boolean surgeryEnabled() {
-        return !"1".equals(System.getenv("DHVK_NOSURGERY"));
+        // 移植后默认关: 原生 vanilla 设备 + 全 classic = DH 本体实测状态 (test5);
+        // DHVK_SURGERY=1 回开旧手术链做 A/B 对照。
+        return "1".equals(System.getenv("DHVK_SURGERY"));
     }
 
     /** 门槛是否已通过(未跑过 = 未通过)。 */
@@ -201,11 +208,16 @@ public final class DhVkClient implements ClientModInitializer {
             disabled = true;
             return;
         }
-        if (!surgeryApplied) {
+        if (!surgeryApplied && surgeryEnabled()) {
             LOGGER.error(
                     "[dhvk] device gate FAILED: device surgery not applied (device has no descriptor heap) -> "
                     + "mod disabled, vanilla renderer running");
             disabled = true;
+            return;
+        }
+        if (!surgeryEnabled()) {
+            // 移植态: 设备原生 vanilla, 无堆扩展 — DH 本体同款纯 classic 栈 (test5 实证可行)
+            LOGGER.info("[dhvk] device gate PASSED: vanilla device (surgery off, DH-style pure classic stack)");
             return;
         }
         // 用捕获的 physicalDevice 自查 descriptorHeap feature(pNext 挂 features-ext 结构体)

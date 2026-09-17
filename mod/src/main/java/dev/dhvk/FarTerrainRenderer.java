@@ -135,6 +135,25 @@ public final class FarTerrainRenderer {
         .build();
 
     /**
+     * 移植态主管线 (run89+): 与 PIPELINE 同构但**无 GEOMETRY 幻影 BGL** ——
+     * 顶点/索引走真实缓冲绑定, UBO 走官方 bindDefaultUniforms 纯原生通道
+     * (DH 26.2 姿势: 官方管线编译 + 整缓冲绑定 + 共享 CBU 离屏 pass, 零手术)。
+     */
+    private static final RenderPipeline PIPELINE_DH = RenderPipeline.builder()
+        .withLocation(PIPELINE_LOCATION)
+        .withVertexShader(SHADER)
+        .withFragmentShader(SHADER)
+        .withBindGroupLayout(BindGroupLayouts.GLOBALS)
+        .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
+        .withBindGroupLayout(BindGroupLayouts.FOG)
+        .withColorTargetState(ColorTargetState.DEFAULT)
+        .withVertexBinding(0, DefaultVertexFormat.POSITION_COLOR)
+        .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+        .withCull(false)
+        .withDepthStencilState(DepthStencilState.DEFAULT)
+        .build();
+
+    /**
      * run25 探针管线: 与 PIPELINE 完全同 BGL(静态映射/手术/捕获全复用), 唯一差异 =
      * 探针 shader(无矩阵裁剪, 自报告堆读值 → 墙面颜色)+ 深度测试恒过不写。
      * 用途: 表字节已被 run24 读回验证全对但墙仍不可见 → 让 GPU 把"每个堆槽实际读到的值"
@@ -354,12 +373,52 @@ public final class FarTerrainRenderer {
 
     /** 把远几何 pass 挂进官方帧图:与云 pass 同款,读写主目标(共享深度)。mod 自禁用时不挂 pass。 */
     public static void attach(final FrameGraphBuilder frame, final LevelTargetBundle targets) {
+        // 移植态默认走 DH 式 TAIL 钩子 (MixinLevelRendererDhvk); 旧帧图 pass 仅 DHVK_OLDPASS=1 回开
+        if (!DhVkClient.oldPassOn()) {
+            return;
+        }
         if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
             return;
         }
         FramePass pass = frame.addPass("far_terrain");
         targets.main = pass.readsAndWrites(targets.main);
         pass.executes(FarTerrainRenderer::render);
+    }
+
+    /**
+     * DH 式帧路径 (run89+): 官方场景帧图执行完之后 (LevelRenderer.render 的 TAIL 钩子触发),
+     * 在设备共享 CBU 上把体素带画进自建离屏对 (颜色 RGBA8 + 深度 D32, 深度清 1.0)。
+     * 纯官方管线 PIPELINE_DH + 整缓冲绑定 + bindDefaultUniforms; S3 再在此追加
+     * 全屏合成扇把离屏结果贴回主目标。帧末由设备统一提交 (与 DH 本体同节奏)。
+     */
+    public static void dhStyleFrame(final RenderTarget mainTarget) {
+        if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
+            return;
+        }
+        ensureBuffers();
+        if (DhVkClient.disabled || meshVboBuffer == null || meshIboBuffer == null) {
+            return;
+        }
+        if (offscreen == null) {
+            offscreen = new DhVkOffscreen();
+        }
+        if (!offscreen.tryCreateOrResize(mainTarget.width, mainTarget.height)) {
+            // 尺寸未变: 纹理已在; 仍需每帧清屏(本帧重画)
+        }
+        final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+        offscreen.clear(encoder);
+        try (RenderPass pass = encoder.createRenderPass(
+                () -> "dhvk:far_offscreen",
+                offscreen.colorView(),
+                java.util.Optional.of(new org.joml.Vector4f(0.0f, 0.0f, 0.0f, 0.0f)),
+                offscreen.depthView(),
+                java.util.OptionalDouble.of(1.0))) {
+            pass.setPipeline(PIPELINE_DH);
+            RenderSystem.bindDefaultUniforms(pass);
+            pass.setVertexBuffer(0, meshVboBuffer.slice());
+            pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
+            pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
+        }
     }
 
     /** run30 对齐/事实采集帧。run29 哨兵全黑 = GPU 读到的描述符是零 —— 既非活体重读
@@ -468,6 +527,14 @@ public final class FarTerrainRenderer {
     /** 本帧瞬态 slice(VBO/IBO 各一); render 线程独占。 */
     private static GpuBufferSlice streamVboSlice;
     private static GpuBufferSlice streamIboSlice;
+
+    /** 移植态: 自建离屏目标对 (懒加载, 渲染线程内初始化)。 */
+    private static DhVkOffscreen offscreen;
+
+    /** 移植态: 手术关时设备无 BDA 扩展, 缓冲不带 SHADER_DEVICE_ADDRESS 位。 */
+    private static int bda() {
+        return DhVkClient.surgeryEnabled() ? DeviceAddressUsage.DEVICE_ADDRESS : 0;
+    }
     /** 3 帧保留窗(与 DT ring 3-buffer 旋转同节奏; 官方析构队列按 submit 数回收块,
      *  保留窗只是显式防 GPU in-flight 读-CPU 再分配的引用窗)。 */
     private static final int STREAM_RETENTION_FRAMES = 3;
@@ -528,9 +595,9 @@ public final class FarTerrainRenderer {
         try {
             TransientMemory tm = encoder.transientMemory();
             streamVboSlice = tm.uploadGpu(vbo, 256L,
-                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda());
             streamIboSlice = tm.uploadGpu(ibo, 256L,
-                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda());
         } catch (RuntimeException e) {
             LOGGER.error("[dhvk] run42 stream gate FAILED (official transient ring upload) -> mod disabled: {}",
                     e.toString());
@@ -601,9 +668,9 @@ public final class FarTerrainRenderer {
             ByteBuffer ibo0 = ByteBuffer.allocateDirect(meshIbo.length).order(ByteOrder.LITTLE_ENDIAN);
             ibo0.put(meshIbo).rewind();
             meshVboBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/mesh_vbo",
-                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, vbo0);
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vbo0);
             meshIboBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/mesh_ibuffer",
-                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, ibo0);
+                    GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), ibo0);
             LOGGER.info("[dhvk] run82 mesh persistent buffers: VBO={}B IBO={}B (static, 脱离瞬态ring)",
                     meshVbo.length, meshIbo.length);
             streamVboSlice = meshVboBuffer.slice();
@@ -616,9 +683,9 @@ public final class FarTerrainRenderer {
             try {
                 TransientMemory tm = encoder.transientMemory();
                 streamVboSlice = tm.uploadGpu(vbo, 256L,
-                        GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+                        GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda());
                 streamIboSlice = tm.uploadGpu(ibo, 256L,
-                        GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS);
+                        GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda());
             } catch (RuntimeException e) {
                 LOGGER.error("[dhvk] s2v2 mesh stream gate FAILED (official transient ring upload) -> mod disabled: {}",
                         e.toString());
@@ -1192,11 +1259,11 @@ public final class FarTerrainRenderer {
         // usage 带设备地址位(2026 值空间 = SHADER_DEVICE_ADDRESS, 经 VulkanConstBdaUsageMixin
         // 从 DEVICE_ADDRESS 标记位折算) + DEVICE_ADDRESS 内存(VMA 自动), 三要素齐备方合法
         vertexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_vbo",
-                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS,
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(),
                 vbo);
         vertexSlice = vertexBuffer.slice();
         indexBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_ibuffer",
-                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS,
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(),
                 ibo);
         LOGGER.info("[dhvk] S0 far-terrain buffers created (vbo={}B, ibo={}B)", vbo.capacity(), ibo.capacity());
 
@@ -1216,15 +1283,15 @@ public final class FarTerrainRenderer {
         iboR.rewind();
 
         vertexBufferL = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_vboL",
-                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, vboL);
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vboL);
         vertexSliceL = vertexBufferL.slice();
         indexBufferL = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_ibufferL",
-                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, iboL);
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), iboL);
         vertexBufferR = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_vboR",
-                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, vboR);
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_UNIFORM | bda(), vboR);
         vertexSliceR = vertexBufferR.slice();
         indexBufferR = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_probe2_ibufferR",
-                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, iboR);
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_UNIFORM | bda(), iboR);
         LOGGER.info("[dhvk] run26 probe2 buffers created (halves: vbo=64B x2, ibo=12B x2)");
 
         // S1 任务 2: 描述符堆 = 墙几何地址的承载体(持久堆; 任务 3 才换正式 arena,
@@ -1273,7 +1340,7 @@ public final class FarTerrainRenderer {
         }
         sentinel.rewind();
         sentinelBuffer = RenderSystem.getDevice().createBuffer(() -> "dhvk/far_terrain_sentinel",
-                GpuBuffer.USAGE_UNIFORM | DeviceAddressUsage.DEVICE_ADDRESS, sentinel);
+                GpuBuffer.USAGE_UNIFORM | bda(), sentinel);
         sentinelBase = bdaAddress2(((VulkanGpuBuffer) sentinelBuffer).vkBuffer());
         for (int i = 0; i < 6; i++) {
             heap.writeBufferDescriptor(i / 2, i % 2, sentinelBase + (long) i * 64, 64L);
