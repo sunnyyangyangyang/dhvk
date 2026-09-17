@@ -476,8 +476,17 @@ public final class FarTerrainRenderer {
         // 见 MixinLevelRendererDhvk HEAD), 描述符指向 ring 既有区段, 与 DH 绑官方 uniform 同姿。
         final GpuBufferSlice officialDt = DhVkClient.UNIFORM_SLICES.get("DynamicTransforms");
         if (officialDt == null) {
+            if (dhvkPassFrames % 300 == 0) {
+                LOGGER.debug("[dhvk] band pass SKIP: DynamicTransforms slice 缺失 (官方场景未捕获 DT)");
+            }
+            dhvkPassFrames++;
             return;
         }
+        if (dhvkPassFrames % 300 == 0) {
+            LOGGER.debug("[dhvk] band pass draw: idxCount={} dtOffset={} vbo={}B (frame={})",
+                    meshIndexCount, officialDt.offset(), meshVboBuffer.size(), dhvkPassFrames);
+        }
+        dhvkPassFrames++;
         try (RenderPass pass = encoder.createRenderPass(
                 () -> "dhvk:far_offscreen",
                 offscreen.colorView(),
@@ -500,6 +509,10 @@ public final class FarTerrainRenderer {
      */
     private static void renderFanPass(final CommandEncoder encoder, final RenderTarget mainTarget) {
         offscreen.ensureSampler();
+        if (dhvkPassFrames % 600 == 0) {
+            LOGGER.debug("[dhvk] fan pass onto main {}x{} (frame={})",
+                    mainTarget.width, mainTarget.height, dhvkPassFrames);
+        }
         try (RenderPass apply = encoder.createRenderPass(
                 () -> "dhvk:far_apply",
                 mainTarget.getColorTextureView(),
@@ -695,6 +708,8 @@ public final class FarTerrainRenderer {
     private static final CpuGreedyMeshExtractor MESH_EXTRACTOR = new CpuGreedyMeshExtractor();
     /** 带构建等待帧数(带区 r256 探针未齐时每帧 head-only, 顺延构建)。 */
     private static int meshWaitFrames;
+    /** run139: pass 执行节流诊断计数 (FULLLOG 下每 300 帧一条 debug)。 */
+    private static long dhvkPassFrames;
 
     static {
         ByteBuffer head = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
