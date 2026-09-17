@@ -111,10 +111,11 @@ public final class DhVkClient implements ClientModInitializer {
         return "1".equals(System.getenv("DHVK_NODEPTH"));
     }
 
-    /** run87 刀一 A/B (DH 参照): DHVK_NOSURGERY=1 → 关闭静态映射手术/名册/堆表重写,
-     *  全部走官方原生描述符通道(DH 26.2 姿势: 纯 setUniform/官方管线编译, 零手术)。 */
+    /** run88 刀一 A/B (DH 参照): DHVK_NOMAPPING=1 → 关管线层手术(静态映射注入/名册/堆表
+     *  重写), UBO 全走官方原生描述符通道(DH 26.2 零手术姿势); 设备层手术保持开启
+     *  (堆扩展是超集, 官方后端无害) —— 区别于 DHVK_NOSURGERY 那把关全部层级的总闸。 */
     public static boolean surgeryOff() {
-        return "1".equals(System.getenv("DHVK_NOSURGERY"));
+        return "1".equals(System.getenv("DHVK_NOMAPPING"));
     }
 
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。

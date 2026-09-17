@@ -1050,7 +1050,7 @@ public final class FarTerrainRenderer {
         if (DhVkClient.surgeryOff()) {
             if (!nosurgeryLogOnce) {
                 nosurgeryLogOnce = true;
-                LOGGER.info("[dhvk] run87 DHVK_NOSURGERY: 手术链关闭(映射/名册/堆表重写全关, 纯官方描述符通道, DH 26.2 姿势)");
+                LOGGER.info("[dhvk] run88 DHVK_NOMAPPING: 管线层手术关闭(映射/名册/堆表重写全关, 纯官方描述符通道, DH 26.2 姿势; 设备层保持开启)");
             }
             return;
         }
