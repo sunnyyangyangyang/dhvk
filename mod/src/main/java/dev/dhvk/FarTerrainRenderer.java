@@ -418,7 +418,10 @@ public final class FarTerrainRenderer {
         if (DhVkClient.disabled || !DhVkClient.wallEnvOn()) {
             return;
         }
+        final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         ensureBuffers();
+        // 移植态: 几何构建+持久缓冲上传走 meshFrame (信标模式下不受 chunk 就绪门限); 首帧未就绪则下帧再试
+        meshFrame(encoder);
         if (DhVkClient.disabled || meshVboBuffer == null || meshIboBuffer == null) {
             return;
         }
@@ -428,7 +431,6 @@ public final class FarTerrainRenderer {
         if (!offscreen.tryCreateOrResize(mainTarget.width, mainTarget.height)) {
             // 尺寸未变: 纹理已在; 仍需每帧清屏(本帧重画)
         }
-        final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         offscreen.clear(encoder);
         try (RenderPass pass = encoder.createRenderPass(
                 () -> "dhvk:far_offscreen",
@@ -686,7 +688,8 @@ public final class FarTerrainRenderer {
     private static void meshFrame(final CommandEncoder encoder) {
         Minecraft minecraft = Minecraft.getInstance();
         if (!meshBuilt && minecraft.level != null && minecraft.player != null) {
-            if (!bandRegionReady(minecraft)) {
+            // 移植态信标: 静态四边形不读 chunk, 跳过带区就绪门直接构建
+            if (!DhVkClient.beaconOn() && !bandRegionReady(minecraft)) {
                 // 带区 chunk 未加载齐(生成/流送中) → 本帧只出 head 顶点(探针哨兵活体), 构建顺延
                 if (meshWaitFrames == 0 || meshWaitFrames % 60 == 0) {
                     LOGGER.info("[dhvk] s2v2 mesh band deferred: r256 探针未齐, waitFrames={}", meshWaitFrames);
