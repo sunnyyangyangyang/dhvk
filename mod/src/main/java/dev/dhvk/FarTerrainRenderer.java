@@ -102,6 +102,7 @@ public final class FarTerrainRenderer {
     private static final Identifier SHADER = Identifier.fromNamespaceAndPath("dhvk", "core/far_terrain");
     private static final Identifier SHADER_PROBE = Identifier.fromNamespaceAndPath("dhvk", "core/far_terrain_probe");
     private static final Identifier SHADER_PROBE2 = Identifier.fromNamespaceAndPath("dhvk", "core/far_terrain_probe2");
+    private static final Identifier SHADER_APPLY = Identifier.fromNamespaceAndPath("dhvk", "core/apply_fan");
     private static final Identifier PIPELINE_LOCATION = Identifier.fromNamespaceAndPath("dhvk", "pipeline/far_terrain");
 
     /**
@@ -151,6 +152,28 @@ public final class FarTerrainRenderer {
         .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
         .withCull(false)
         .withDepthStencilState(DepthStencilState.DEFAULT)
+        .build();
+
+    /** S3 合成扇 BGL: 离屏颜色/深度两个采样器。 */
+    private static final BindGroupLayout APPLY_SAMPLERS = BindGroupLayout.builder()
+        .withSampler("uSourceColorTexture")
+        .withSampler("uSourceDepthTexture")
+        .build();
+
+    /**
+     * S3 合成扇管线: 全屏 NDC 四角三角扇, 无深度测试不混合,
+     * 把离屏对结果按"源深度有效"贴回主目标 (DH apply.frag 同款逻辑)。
+     */
+    private static final RenderPipeline PIPELINE_APPLY = RenderPipeline.builder()
+        .withLocation(PIPELINE_LOCATION)
+        .withVertexShader(SHADER_APPLY)
+        .withFragmentShader(SHADER_APPLY)
+        .withBindGroupLayout(APPLY_SAMPLERS)
+        .withColorTargetState(ColorTargetState.DEFAULT)
+        .withVertexBinding(0, DefaultVertexFormat.POSITION_COLOR)
+        .withPrimitiveTopology(PrimitiveTopology.TRIANGLE_FAN)
+        .withCull(false)
+        .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
         .build();
 
     /**
@@ -419,6 +442,35 @@ public final class FarTerrainRenderer {
             pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
             pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
         }
+        // S3: 合成扇 → 主目标 —— 只把离屏深度有效(画到)的像素贴回场景
+        if (fanVboBuffer == null) {
+            fanVboBuffer = createFanVbo();
+        }
+        offscreen.ensureSampler();
+        try (RenderPass apply = encoder.createRenderPass(
+                () -> "dhvk:far_apply",
+                mainTarget.getColorTextureView(),
+                java.util.Optional.empty())) {
+            apply.setPipeline(PIPELINE_APPLY);
+            apply.bindTexture("uSourceColorTexture", offscreen.colorView(), offscreen.ensureSampler());
+            apply.bindTexture("uSourceDepthTexture", offscreen.depthView(), offscreen.ensureSampler());
+            apply.setVertexBuffer(0, fanVboBuffer.slice());
+            apply.draw(4, 1, 0, 0);
+        }
+    }
+
+    /** S3 合成扇 VBO: NDC 四角三角扇, POSITION_COLOR 16B/顶点。 */
+    private static GpuBuffer createFanVbo() {
+        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(4 * 16)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        float[][] verts = {{-1.0f, -1.0f, 0.0f}, {1.0f, -1.0f, 0.0f},
+                {1.0f, 1.0f, 0.0f}, {-1.0f, 1.0f, 0.0f}};
+        for (float[] v : verts) {
+            bb.putFloat(v[0]).putFloat(v[1]).putFloat(v[2]);
+            bb.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        return RenderSystem.getDevice().createBuffer(
+                () -> "dhvk/apply_fan_vbo", GpuBuffer.USAGE_VERTEX | bda(), bb);
     }
 
     /** run30 对齐/事实采集帧。run29 哨兵全黑 = GPU 读到的描述符是零 —— 既非活体重读
@@ -530,6 +582,8 @@ public final class FarTerrainRenderer {
 
     /** 移植态: 自建离屏目标对 (懒加载, 渲染线程内初始化)。 */
     private static DhVkOffscreen offscreen;
+    /** S3 合成扇 VBO: NDC 四角 (±1,±1,0) + 白色, 16B/顶点, 与带几何同格式。 */
+    private static GpuBuffer fanVboBuffer;
 
     /** 移植态: 手术关时设备无 BDA 扩展, 缓冲不带 SHADER_DEVICE_ADDRESS 位。 */
     private static int bda() {
