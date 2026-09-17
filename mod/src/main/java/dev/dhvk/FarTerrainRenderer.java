@@ -449,14 +449,24 @@ public final class FarTerrainRenderer {
             return;
         }
         final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
+        // 二分门 (run110): DHVK_NOBAND=1 跳过离屏清屏+带 pass; DHVK_NOFAN=1 跳过合成扇
+        if (!"1".equals(System.getenv("DHVK_NOBAND"))) {
+            renderBandPass(encoder);
+        }
+        if ("1".equals(System.getenv("DHVK_NOFAN"))) {
+            return;
+        }
+        renderFanPass(encoder, mainTarget);
+    }
+
+    /** 离屏带 pass: 清屏 + 借官方 DT slice + PIPELINE_DH 绘制 (DHVK_NOBAND 二分用)。 */
+    private static void renderBandPass(final CommandEncoder encoder) {
         offscreen.clear(encoder);
-        // 移植态终解 (run102): 帧末一切 CPU→GPU 上传都踩瞬态 ring 的定账 (run96/100/101 三连 SEGV
-        // 同根: 官方 createBuffer(ByteBuffer)/writeToBuffer 内部皆走 uploadStaging) → TAIL 里
-        // 零拷贝: 直接借官方场景帧写进 ring 的本帧 ModelView slice (探针 mixin 全帧捕获, 见
-        // MixinLevelRendererDhvk HEAD), 描述符指向 ring 既有区段, 与 DH 绑官方 uniform 同姿。
+        // 移植态终解 (run102): 帧末一切 CPU→GPU 上传都踩瞬态 ring 的定账 (run96/100/101 同根)
+        // → TAIL 里零拷贝: 借官方场景帧写进 ring 的本帧 ModelView slice (探针 mixin 全帧捕获,
+        // 见 MixinLevelRendererDhvk HEAD), 描述符指向 ring 既有区段, 与 DH 绑官方 uniform 同姿。
         final GpuBufferSlice officialDt = DhVkClient.UNIFORM_SLICES.get("DynamicTransforms");
         if (officialDt == null) {
-            // 本帧官方场景尚未写过 DT (首帧/暂停帧) → 下帧再画
             return;
         }
         try (RenderPass pass = encoder.createRenderPass(
@@ -472,7 +482,10 @@ public final class FarTerrainRenderer {
             pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
             pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
         }
-        // S3: 合成扇 → 主目标 —— 只把离屏深度有效(画到)的像素贴回场景
+    }
+
+    /** S3 合成扇 → 主目标: 只把离屏深度有效(画到)的像素贴回场景。 */
+    private static void renderFanPass(final CommandEncoder encoder, final RenderTarget mainTarget) {
         offscreen.ensureSampler();
         try (RenderPass apply = encoder.createRenderPass(
                 () -> "dhvk:far_apply",
@@ -485,7 +498,6 @@ public final class FarTerrainRenderer {
             apply.draw(4, 1, 0, 0);
         }
     }
-
     /** S3 合成扇 VBO: NDC 四角三角扇, POSITION_COLOR 16B/顶点。 */
     private static GpuBuffer createFanVbo() {
         java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(4 * 16)
