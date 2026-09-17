@@ -498,6 +498,7 @@ public final class FarTerrainRenderer {
             apply.draw(4, 1, 0, 0);
         }
     }
+
     /** S3 合成扇 VBO: NDC 四角三角扇, POSITION_COLOR 16B/顶点。 */
     private static GpuBuffer createFanVbo() {
         java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(4 * 16)
