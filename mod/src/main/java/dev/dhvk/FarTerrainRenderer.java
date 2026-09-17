@@ -440,6 +440,8 @@ public final class FarTerrainRenderer {
                 java.util.OptionalDouble.of(1.0))) {
             pass.setPipeline(PIPELINE_DH);
             RenderSystem.bindDefaultUniforms(pass);
+            pass.setUniform("DynamicTransforms",
+                    RenderSystem.getDynamicUniforms().writeTransform(RenderSystem.getModelViewMatrixCopy()));
             pass.setVertexBuffer(0, meshVboBuffer.slice());
             pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
             pass.drawIndexed(meshIndexCount, 1, 0, 0, 0);
