@@ -448,13 +448,22 @@ public final class FarTerrainRenderer {
                         () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), 160L);
                 dtSlice = dtBuffer.slice();
             }
+            // 全部走 JDK putFloat 路径 (run97 SEGV: joml MemUtilUnsafe.put 直接地址写踩飞)
             java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocate(160)
                     .order(java.nio.ByteOrder.LITTLE_ENDIAN);
-            RenderSystem.getModelViewMatrixCopy().get(dtb);
-            dtb.position(64);
+            float[] mv = new float[16];
+            RenderSystem.getModelViewMatrixCopy().get(mv);
+            for (int i = 0; i < 16; i++) {
+                dtb.putFloat(mv[i]);
+            }
             dtb.putFloat(1.0F).putFloat(1.0F).putFloat(1.0F).putFloat(1.0F);
-            dtb.position(96);
-            DT_IDENTITY.get(dtb);
+            dtb.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
+            dtb.putFloat(0.0F);
+            float[] id = new float[16];
+            DT_IDENTITY.get(id);
+            for (int i = 0; i < 16; i++) {
+                dtb.putFloat(id[i]);
+            }
             dtb.rewind();
             encoder.writeToBuffer(dtSlice, dtb);
             pass.setUniform("DynamicTransforms", dtSlice);
