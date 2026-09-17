@@ -106,6 +106,11 @@ public final class DhVkClient implements ClientModInitializer {
         return "1".equals(System.getenv("DHVK_NOEXCLUDE"));
     }
 
+    /** run85 深度旁路裁决: DHVK_NODEPTH=1 → 带几何走 ALWAYS_PASS 管线(与探针唯一差异 = 深度态)。 */
+    public static boolean nodepthOn() {
+        return "1".equals(System.getenv("DHVK_NODEPTH"));
+    }
+
     /** S2v2 任务 1: 贪心 tile 带原点覆写 "x z"（世界 block；缺省 = 首帧玩家位置）。
      *  用途: 出生点与目验目标 chunk 不一致时钉住 tile 带。 */
     public static String meshAt() {

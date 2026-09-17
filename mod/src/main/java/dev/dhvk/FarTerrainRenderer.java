@@ -160,6 +160,26 @@ public final class FarTerrainRenderer {
         .build();
 
     /**
+     * run85 深度旁路裁决管线: 与 PIPELINE 唯一差异 = 深度测试恒过不写(与探针同)。
+     * DHVK_NODEPTH=1 时带几何改走本管线 —— 与探针(可见)的唯一剩余差异即深度状态,
+     * 现身 = 远pass深度附件在带draw时刻持有更近的旧值; 不现身 = 顶点/索引编译态问题。
+     */
+    private static final RenderPipeline PIPELINE_NODEPTH = RenderPipeline.builder()
+        .withLocation(PIPELINE_LOCATION)
+        .withVertexShader(SHADER)
+        .withFragmentShader(SHADER)
+        .withBindGroupLayout(BindGroupLayouts.GLOBALS)
+        .withBindGroupLayout(BindGroupLayouts.MATRICES_PROJECTION)
+        .withBindGroupLayout(BindGroupLayouts.FOG)
+        .withBindGroupLayout(GEOMETRY)
+        .withColorTargetState(ColorTargetState.DEFAULT)
+        .withVertexBinding(0, DefaultVertexFormat.POSITION_COLOR)
+        .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+        .withCull(false)
+        .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+        .build();
+
+    /**
      * run26 双半屏仲裁管线(判读表见 far_terrain_probe2 shader 头):左半屏纯写入
      * (DEFAULT = 不启用混合 → 纯写),右半屏现用 (ZERO,ONE) 状态。同帧两半互不重叠:
      * (ZERO,ONE) 若 = dst-pass → 右半原样透出场景(青被杀);若 = replace → 右半纯青。
@@ -197,8 +217,8 @@ public final class FarTerrainRenderer {
 
     /** run32 Ace2: DHVK 四条堆管线名册(ensureHeapSurgery 登记进 push 取消名册,
      *  见 VulkanRenderPassPushCancelMixin). */
-    private static final RenderPipeline[] DHVK_PIPELINES = {PIPELINE, PIPELINE_PROBE, PIPELINE_PROBE2_REPLACE,
-        PIPELINE_PROBE2_BLEND};
+    private static final RenderPipeline[] DHVK_PIPELINES = {PIPELINE, PIPELINE_NODEPTH, PIPELINE_PROBE,
+        PIPELINE_PROBE2_REPLACE, PIPELINE_PROBE2_BLEND};
 
     /** S1 任务 2: 几何描述符承载堆(持久,init 建一次;墙 A/B 的 VBO/IBO 地址注册在 cell 0)。 */
     private static final long CELL_CAPACITY = 8192L;
@@ -403,7 +423,9 @@ public final class FarTerrainRenderer {
             FarPassStopwatch.emitStart((DhvkCommandEncoder) (Object) encoder);
             // 主管线(DEFAULT 纯写入)绘双墙; 几何经堆源描述符(cell 0, 任务 4 起 = 本帧瞬态
             // slice 的 BDA), uniform 经每帧堆表重写。
-            renderPass.setPipeline(PIPELINE);
+            // run85 深度旁路裁决: DHVK_NODEPTH=1 → 同几何走 ALWAYS_PASS 管线
+            RenderPipeline activePipeline = DhVkClient.nodepthOn() ? PIPELINE_NODEPTH : PIPELINE;
+            renderPass.setPipeline(activePipeline);
             RenderSystem.bindDefaultUniforms(renderPass);
             renderPass.setUniform("DynamicTransforms", dynamicTransforms);
             // phantom 绑定填充:官方 pushDescriptors 对合并 layout 的每个 UNIFORM_BUFFER 条目
