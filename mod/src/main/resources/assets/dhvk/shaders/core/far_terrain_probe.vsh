@@ -17,8 +17,11 @@ in vec4 Color;
 //   板A(左) = (v0, v1, v2), 板B(右) = (v3, v4, v5);
 //   六片全活时: 板A = (1/6, 2/6, 3/6), 板B = (4/6, 5/6, 1.0)。
 // Fog/Globals 用官方匿名块(与主管线同 import, 成员裸引用), VBO/IBO 用幻影块钉 OpVariable。
-layout(std140) uniform VBO { vec4 pad; } u_vbo_phantom;
-layout(std140) uniform IBO { vec4 pad; } u_ibo_phantom;
+// run80 GPU 侧 slice 真值解码: 幻影块扩窗读 slice 内已知偏移 ——
+//  VBO: pad[0]=头(x=-400) / pad[1]=首真实顶点(偏移16, 带时代 x∈[1500,1800]);
+//  IBO: pad[0]=头(=0) / pad[6]=首带索引(偏移24, =1)。
+layout(std140) uniform VBO { vec4 pad[4]; } u_vbo_phantom;
+layout(std140) uniform IBO { vec4 pad[8]; } u_ibo_phantom;
 
 out vec4 vertexColor;
 
@@ -27,9 +30,11 @@ void main() {
     float cx = mix(-0.55, 0.55, wallId) + Position.z * 0.05;
     float cy = (Position.y - 64.0) * 0.01;
     gl_Position = vec4(cx, cy, 0.0, 1.0);
-    float v0 = clamp(abs(u_vbo_phantom.pad.x) / 6.0, 0.0, 1.0);
-    float v1 = clamp(abs(u_ibo_phantom.pad.x) / 6.0, 0.0, 1.0);
-    float v2 = clamp(abs(ProjMat[0].x) / 6.0, 0.0, 1.0);
+    // run80 判读: 左板 R=VBO槽活(头==-400) G=IBO槽活(头==0且首索引==1) B=VBO内容真(首顶点x∈带域)
+    //   三通道全亮 = GPU 经堆描述符真读到本帧带 slice; 任一暗 = 断点即该通道。
+    float v0 = (abs(u_vbo_phantom.pad[0].x + 400.0) < 1.0) ? 1.0 : 0.0;
+    float v1 = (abs(u_ibo_phantom.pad[0].x) < 0.5 && abs(u_ibo_phantom.pad[6].x - 1.0) < 0.5) ? 1.0 : 0.0;
+    float v2 = (u_vbo_phantom.pad[1].x > 1500.0 && u_vbo_phantom.pad[1].x < 1800.0) ? 1.0 : 0.0;
     float v3 = clamp(abs(ModelViewMat[0].x) / 6.0, 0.0, 1.0);
     float v4 = clamp(abs(FogColor.x) / 6.0, 0.0, 1.0);
     float v5 = clamp(abs(float(CameraBlockPos.x)) / 6.0, 0.0, 1.0);
