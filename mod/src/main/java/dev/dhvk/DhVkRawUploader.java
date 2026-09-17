@@ -95,14 +95,13 @@ public final class DhVkRawUploader {
         final long vkBuffer = ((VulkanGpuBuffer) buffer).vkBuffer();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             final PointerBuffer cbufArr = stack.mallocPointer(1);
-            try (VkCommandBufferAllocateInfo cai = VkCommandBufferAllocateInfo.calloc(stack)
+            final VkCommandBufferAllocateInfo cai = VkCommandBufferAllocateInfo.calloc(stack)
                     .sType(VK10.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
                     .commandPool(pool)
                     .level(VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY)
-                    .commandBufferCount(1)) {
-                check(VK10.vkAllocateCommandBuffers(VkHandles.deviceWrapper, cai, cbufArr),
-                        "vkAllocateCommandBuffers");
-            }
+                    .commandBufferCount(1);
+            check(VK10.vkAllocateCommandBuffers(VkHandles.deviceWrapper, cai, cbufArr),
+                    "vkAllocateCommandBuffers");
             final VkCommandBuffer cbuf = new VkCommandBuffer(cbufArr.get(0), VkHandles.deviceWrapper);
             try {
                 final VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack).sType$Default();
