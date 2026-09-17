@@ -437,8 +437,9 @@ public final class FarTerrainRenderer {
         // ModelViewMat(64) + ColorModulator(16) + ModelOffset(16) + TextureMat(64) = 160B。
         // writeToBuffer 属 pass 外命令 → 必须在开 pass 前完成 (官方编码器纪律, run98 实证)。
         if (dtBuffer == null) {
+            // COPY_DST: writeToBuffer 是复制语义, 目标缓冲必须带该位 (run99 实证)
             dtBuffer = RenderSystem.getDevice().createBuffer(
-                    () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), 160L);
+                    () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST | bda(), 160L);
             dtSlice = dtBuffer.slice();
         }
         java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocate(160)
