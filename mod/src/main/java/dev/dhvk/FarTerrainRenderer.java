@@ -624,11 +624,13 @@ public final class FarTerrainRenderer {
         // (半空穿过 y∈[144,176) 区间即触发), 锚肉身会把带抬进天空 → 全空气带(run49/50/51 根因)
         int surfaceY = minecraft.level.getHeight(
                 net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, (int) px, (int) pz);
-        // 目验收调试: DHVK_MESH_LIFT=N → Y 窗整体上移(纸片抬出草海, 地面视角可辨); 生产默认 0
+        // 目验收调试: DHVK_MESH_LIFT=N → 几何整体上移 N 块(纸片抬出草海, 仰角/侧视可辨);
+        // 只移顶点、不动 Y 采样窗 —— run72 定谳: 窗口平移只削掉纸片底段, 顶面仍与草海
+        // 共面 → 依旧不可见。生产默认 0。
         int lift = DhVkClient.meshLift();
-        meshOy = Math.floorDiv((long) surfaceY - 48L + lift, 32) * 32;
-        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} lift={} -> bandY=[{}, {}]",
-                surfaceY, (int) py, lift, meshOy, meshOy + 96L);
+        meshOy = Math.floorDiv((long) surfaceY - 48L, 32) * 32;
+        LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} -> bandY=[{}, {}] geoLift={}",
+                surfaceY, (int) py, meshOy, meshOy + 96L, lift);
         java.util.List<BandTile> band = new ArrayList<>();
         int missing = 0;
         for (int dx = -1; dx <= 1; dx++) {
@@ -686,7 +688,7 @@ public final class FarTerrainRenderer {
                 }
                 for (int k2 = 0; k2 < 6; k2++) {
                     v.putFloat((float) (bt.ox() + corners[k2 * 3]));
-                    v.putFloat((float) (bt.oy() + corners[k2 * 3 + 1]));
+                    v.putFloat((float) (bt.oy() + corners[k2 * 3 + 1] + lift));
                     v.putFloat((float) (bt.oz() + corners[k2 * 3 + 2]));
                     v.put(cr).put(cg).put(cb).put((byte) 255);
                 }

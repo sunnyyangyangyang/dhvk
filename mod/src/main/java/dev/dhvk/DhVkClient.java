@@ -85,9 +85,9 @@ public final class DhVkClient implements ClientModInitializer {
         return "1".equals(System.getenv("DHVK_SYNTRING"));
     }
 
-    /** 目验收调试因子: DHVK_MESH_LIFT=N(块) → 远带 Y 窗整体上移 N 块(生产默认 0)。
-     *  用途: 平坦地形上带面与近程地形共面 → 侧视不可见(深度平局近程胜); 抬升后纸片
-     *  高出草海, 地面视角即可目验。只动 Y 锚, 不碰生产几何。 */
+    /** 目验收调试因子: DHVK_MESH_LIFT=N(块) → 远带几何整体上移 N 块(生产默认 0; 只移
+     *  顶点, 不动 Y 采样窗)。用途: 平坦地形上带面与近程地形共面 → 不可见(深度平局
+     *  近程胜, run72 定谳); 抬升后纸片高出草海, 仰角/侧视即可目验。 */
     public static int meshLift() {
         String m = System.getenv("DHVK_MESH_LIFT");
         if (m == null || m.isEmpty()) {
