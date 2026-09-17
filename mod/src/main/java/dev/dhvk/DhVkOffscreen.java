@@ -107,6 +107,22 @@ public final class DhVkOffscreen {
         return this.colorView;
     }
 
+    public GpuTexture colorTexture() {
+        return this.colorTex;
+    }
+
+    public GpuTexture depthTexture() {
+        return this.depthTex;
+    }
+
+    public int width() {
+        return this.width;
+    }
+
+    public int height() {
+        return this.height;
+    }
+
     public GpuTextureView depthView() {
         return this.depthView;
     }

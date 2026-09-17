@@ -1,15 +1,13 @@
-# 状态锚点 (2026-09-17 02:25, T3 落盘)
-## 已锁定 (全部有实证)
-- S2/S3 信标移植验收通过 (run116)。五层上卡/上帧根因全清 (ring污染→裸通道; struct close→jemalloc; Xid109/31→扇pass同构附件; memAddress恒0→memAlloc; 64KB上限→staging+vkCmdCopyBuffer(cbuf,srcBuf,dstBuf,Buffer) run135-137)。
-- 全量日志: DHVK_FULLLOG=1 (log4j2 2026重建版 API: core.Logger.get()=LoggerConfig, AppenderRef重写) run134验证。
-- 带构建: 自然门限~90帧, 202177顶点/3.2MB VBO/789KB IBO 完整上卡 (run137/138 双零)。
-## 当前谜题 (君: "没看见")
-- run138 几何全对: surfaceY=68, lift=40 → 带顶面 y=108 (君y=130 下方22块); **红色**(lift≠0整片纯红) + 自动红色方尖碑 tower y[108,168] 于钉点(1659,320)=君东北19块、顶高出君眼38块。索引类型=INT✓ (L491)。27 tiles 全 kept。
-- 信标(4顶点远墙)可见 ⇒ 离屏→扇→主目标链通; 带(20万顶点+塔, 相机在带体积内/上方)不可见 ⇒ 差异=几何尺度/相机在几何内部/带pass内容。
-- 待查: renderBandPass 在带run是否真发出 draw (UNIFORM_SLICES 非空?); 扇 discard 深度采样; 相机在抬升地形体积内的近裁/背面剔除效应。
-## 下一步
-run139: lift=40+tower+FULLLOG+fullVVL, 加 renderFanPass/renderBandPass 的节流 debug 日志 (draw次数/切片状态), 君入窗细看下屏面与东北方; 若仍无 → 二分 DHVK_NOFAN 看离屏 (需读回) 或塔alone(lift=0)对照。
+# 状态锚点 (2026-09-17 02:2x, T4)
+## 谜题: 带建出+pass全执行, 屏幕不可见 (君run138/141两次"没看见/窗口死了")
+- run141 诊断日志定谳管线全通: band pass 每帧 draw(idxCount=202134, 官方DT切片 offset轮换✓, vbo=3234080B✓) + fan pass onto main 854x1363✓ + fullVVL双零 + 0SEGV。
+- 几何: surfaceY=68 lift=40 → 带顶面y=108(君130下方22); 整片纯红; 红方尖碑塔 y[108,168] 钉点(1659,320)=君**西偏北**19块(注意+x=西! 之前口头说"东北"是口误, 塔在左手边)。
+- 信标(远墙)可见→链通; 带+塔(近处/相机在体积内)不可见 ⇒ 未解。候选: ①塔方向口误君没看对地方 ②相机在抬升地形内近裁/背面剔除 ③扇discard边界。
+- run139/140 死窗=沙箱容器退场连杀子进程(非游戏崩溃) → 点火必须 run_in_background 长驻容器。
+## 现场
+- run142 长驻窗口在跑 (job bash-94, fullVVL+FULLLOG+lift40+mesh_at), 君暂停要"看看log"。
+- 下一步(君定夺): 让君进run142窗口看**左手偏北的红碑+下半屏红板**; 或做离屏读回dump定谳带pass输出内容; 或 DHVK_TOWER alone(lift=0)对照。
 ## 环境
-env三件套+VK_LAYER_SETTINGS_PATH=full; 命令 DHVK_MESH_AT="1659 320" DHVK_MESH_LIFT=40 DHVK_FULLLOG=1 timeout 900 runClient; 长窗口走 run_in_background; 探针行在 MixinLevelRendererDhvk (fulllog); lwjgl/log4j 2026重建版 API 差异见各 commit。
+env三件套+VK_LAYER_SETTINGS_PATH=$PWD/mc-src/scripts/vvl-fullprofile; 点火: DHVK_MESH_AT="1659 320" DHVK_MESH_LIFT=40 DHVK_FULLLOG=1 timeout 900 runClient (长驻容器!); pass诊断日志=每300帧debug(band draw参数/fan目标), FULLLOG放行; 探针行仍在 MixinLevelRendererDhvk (S4清)。
 ## S4 待办
-拆除钩子(退出对象告警) + STREAM_BUDGET 1000us 门重定/删 + 清死代码 + README LGPL-3 + rc-budget + 推增量 (远端 sunnyyangyangyang/dhvk)。
+拆除钩子 + STREAM_BUDGET重定 + 清死代码/探针 + README LGPL-3 (DH main@f5d2f80/Vulkan@64d8f7e; core@64c5d96,269f2c3) + rc-budget + 推增量段(run122→run142, 远端sunnyyangyangyang/dhvk)。

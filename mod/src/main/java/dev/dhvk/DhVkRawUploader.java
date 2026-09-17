@@ -10,12 +10,19 @@ import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VK12;
+import org.lwjgl.vulkan.VkBufferCreateInfo;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkCommandBufferAllocateInfo;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
 import org.lwjgl.vulkan.VkCommandBufferSubmitInfo;
 import org.lwjgl.vulkan.VkCommandPoolCreateInfo;
 import org.lwjgl.vulkan.VkFenceCreateInfo;
+import org.lwjgl.vulkan.VkImageBlit;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
+import org.lwjgl.vulkan.VkMemoryAllocateInfo;
+import org.lwjgl.vulkan.VkMemoryRequirements;
+import org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties;
 import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSubmitInfo2;
 import org.slf4j.Logger;
@@ -171,6 +178,147 @@ public final class DhVkRawUploader {
                 staging.close();
             }
         }
+    }
+
+    /**
+     * run143: 离屏颜色/深度 GPU 读回 (blit 到 host-visible 缓冲 + fence 等待)。
+     * 与 upload 同款: 同队列 FIFO 一次性 CBU。返回 [颜色RGBA8字节, 深度D32字节]。
+     * 探针用途: 判"带 pass 到底画出没有" —— 底片上有红像素 = pass 干活了, 锅在扇; 全黑 = 锅在带 pass。
+     */
+    public static ByteBuffer[] readback(final long colorImage, final long depthImage,
+            final int w, final int h) {
+        if (!ready) {
+            throw new IllegalStateException("[dhvk] raw uploader not ready");
+        }
+        final int bytes = w * h * 4;
+        final long[] bufs = new long[2];
+        final long[] mems = new long[2];
+        final long[] ptrs = new long[2];
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            for (int k = 0; k < 2; k++) {
+                final long img = (k == 0) ? colorImage : depthImage;
+                final VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(stack)
+                        .sType(VK10.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO)
+                        .size(bytes)
+                        .usage(VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+                        .sharingMode(VK10.VK_SHARING_MODE_EXCLUSIVE);
+                final LongBuffer bufOut = stack.mallocLong(1);
+                check(VK10.vkCreateBuffer(VkHandles.deviceWrapper, bci, null, bufOut), "vkCreateBuffer");
+                bufs[k] = bufOut.get(0);
+                final VkMemoryRequirements req = VkMemoryRequirements.calloc(stack);
+                VK10.vkGetBufferMemoryRequirements(VkHandles.deviceWrapper, bufs[k], req);
+                final VkPhysicalDeviceMemoryProperties props = VkPhysicalDeviceMemoryProperties.calloc(stack);
+                VK10.vkGetPhysicalDeviceMemoryProperties(VkHandles.pdevWrapper, props);
+                int typeIdx = -1;
+                for (int i = 0; i < props.memoryTypeCount(); i++) {
+                    final int flags = props.memoryTypes().get(i).propertyFlags();
+                    if ((req.memoryTypeBits() & (1 << i)) != 0
+                            && (flags & (VK10.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                    | VK10.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) != 0) {
+                        typeIdx = i;
+                        break;
+                    }
+                }
+                if (typeIdx < 0) {
+                    throw new IllegalStateException("[dhvk] readback: no host-visible mem type");
+                }
+                final VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(stack)
+                        .sType(VK10.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
+                        .allocationSize(req.size())
+                        .memoryTypeIndex(typeIdx);
+                final long[] memOut = new long[1];
+                check(VK10.vkAllocateMemory(VkHandles.deviceWrapper, mai, null, memOut),
+                        "vkAllocateMemory");
+                mems[k] = memOut[0];
+                check(VK10.vkBindBufferMemory(VkHandles.deviceWrapper, bufs[k], mems[k], 0),
+                        "vkBindBufferMemory");
+                final PointerBuffer mapPtr = stack.mallocPointer(1);
+                check(VK10.vkMapMemory(VkHandles.deviceWrapper, mems[k], 0, VK10.VK_WHOLE_SIZE,
+                        0, mapPtr), "vkMapMemory");
+                ptrs[k] = mapPtr.get(0);
+
+                final PointerBuffer cbufArr = stack.mallocPointer(1);
+                final VkCommandBufferAllocateInfo cai = VkCommandBufferAllocateInfo.calloc(stack)
+                        .sType(VK10.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
+                        .commandPool(pool)
+                        .level(VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+                        .commandBufferCount(1);
+                check(VK10.vkAllocateCommandBuffers(VkHandles.deviceWrapper, cai, cbufArr),
+                        "vkAllocateCommandBuffers");
+                final VkCommandBuffer cbuf = new VkCommandBuffer(cbufArr.get(0), VkHandles.deviceWrapper);
+                try {
+                    final VkCommandBufferBeginInfo bi = VkCommandBufferBeginInfo.calloc(stack).sType$Default();
+                    check(VK10.vkBeginCommandBuffer(cbuf, bi), "vkBeginCommandBuffer");
+                    // 布局探针: 声明 GENERAL→GENERAL (无转移只锁队列所有权; VVL 口径从宽)
+                    final VkImageSubresourceRange range = VkImageSubresourceRange.calloc(stack)
+                            .aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                            .layerCount(1)
+                            .levelCount(1);
+                    final VkImageMemoryBarrier.Buffer ib = VkImageMemoryBarrier.calloc(1, stack)
+                            .sType(VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+                            .image(img)
+                            .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                            .newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                            .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
+                            .subresourceRange(range);
+                    // fork wrapper 风格: 3 个 int (srcStage/srcAccess/dstStage) + 空缓冲组 null
+                    VK10.vkCmdPipelineBarrier(cbuf, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            0, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, null, null, ib);
+                    final VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
+                    blit.srcSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                            .mipLevel(0).layerCount(1));
+                    blit.dstSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                            .mipLevel(0).layerCount(1));
+                    blit.srcOffsets(0, off3d(stack, 0, 0, 0));
+                    blit.srcOffsets(1, off3d(stack, w, h, 1));
+                    blit.dstOffsets(0, off3d(stack, 0, 0, 0));
+                    blit.dstOffsets(1, off3d(stack, w, h, 1));
+                    VK10.vkCmdBlitImage(cbuf, img, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                            bufs[k], VK10.VK_IMAGE_LAYOUT_GENERAL, blit,
+                            VK10.VK_FILTER_NEAREST);
+                    check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
+                    check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
+                    final VkQueue queue = new VkQueue(VkHandles.queue, VkHandles.deviceWrapper);
+                    final VkSubmitInfo2.Buffer submits = VkSubmitInfo2.calloc(1, stack);
+                    submits.sType$Default();
+                    final VkCommandBufferSubmitInfo.Buffer infos = VkCommandBufferSubmitInfo.calloc(1, stack);
+                    submits.pCommandBufferInfos(infos);
+                    infos.sType$Default();
+                    infos.commandBuffer(cbuf);
+                    check(KHRSynchronization2.vkQueueSubmit2KHR(queue, submits, fence),
+                            "vkQueueSubmit2KHR");
+                    check(VK10.vkWaitForFences(VkHandles.deviceWrapper, fence, true, 5_000_000_000L),
+                            "vkWaitForFences");
+                } finally {
+                    VK10.vkFreeCommandBuffers(VkHandles.deviceWrapper, pool, cbuf);
+                }
+            }
+            // fork 官方模式 (VulkanGpuBuffer): MemoryUtil.memByteBuffer 包装裸地址
+            final ByteBuffer w0 = MemoryUtil.memByteBuffer(ptrs[0], bytes);
+            final ByteBuffer out = ByteBuffer.allocateDirect(bytes);
+            out.put(w0);
+            final ByteBuffer w1 = MemoryUtil.memByteBuffer(ptrs[1], bytes);
+            final ByteBuffer out2 = ByteBuffer.allocateDirect(bytes);
+            out2.put(w1);
+            return new ByteBuffer[] {out.flip(), out2.flip()};
+        } finally {
+            for (int k = 0; k < 2; k++) {
+                if (ptrs[k] != 0L) {
+                    VK10.vkUnmapMemory(VkHandles.deviceWrapper, mems[k]);
+                }
+                if (mems[k] != 0L) {
+                    VK10.vkFreeMemory(VkHandles.deviceWrapper, mems[k], null);
+                }
+                if (bufs[k] != 0L) {
+                    VK10.vkDestroyBuffer(VkHandles.deviceWrapper, bufs[k], null);
+                }
+            }
+        }
+    }
+
+    private static org.lwjgl.vulkan.VkOffset3D off3d(
+            final MemoryStack stack, final int x, final int y, final int z) {
+        return org.lwjgl.vulkan.VkOffset3D.calloc(stack).x(x).y(y).z(z);
     }
 
     private static void check(final int rc, final String op) {

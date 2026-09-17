@@ -20,6 +20,7 @@ import com.mojang.blaze3d.systems.TransientMemory;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
+import com.mojang.blaze3d.vulkan.VulkanGpuTexture;
 import com.mojang.blaze3d.vulkan.VulkanRenderPipeline;
 import dev.dhvk.heap.DescriptorHeap;
 import dev.dhvk.mesh.BlockTile;
@@ -27,12 +28,15 @@ import dev.dhvk.mesh.BlockTileBuilder;
 import dev.dhvk.mesh.CpuGreedyMeshExtractor;
 import dev.dhvk.mesh.LevelBlockSource;
 import dev.dhvk.mesh.MapTileTable;
+import java.awt.image.BufferedImage;
+import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import javax.imageio.ImageIO;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BindGroupLayouts;
 import net.minecraft.client.renderer.LevelTargetBundle;
@@ -466,6 +470,7 @@ public final class FarTerrainRenderer {
             return;
         }
         renderFanPass(encoder, mainTarget);
+        dhvkMaybeDumpOffscreen();
     }
 
     /** 离屏带 pass: 清屏 + 借官方 DT slice + PIPELINE_DH 绘制 (DHVK_NOBAND 二分用)。 */
@@ -708,6 +713,69 @@ public final class FarTerrainRenderer {
     private static final CpuGreedyMeshExtractor MESH_EXTRACTOR = new CpuGreedyMeshExtractor();
     /** 带构建等待帧数(带区 r256 探针未齐时每帧 head-only, 顺延构建)。 */
     private static int meshWaitFrames;
+    /** run143: 带构建完成的帧号 (离屏底片 dump 的相对时基)。 */
+    private static int meshBuiltFrame = -1;
+    /** run143: DHVK_DUMP_OFFSCREEN=1 时, 相对构建帧的 dump 时点 + 完成标记。 */
+    private static final int[] DHVK_DUMP_OFFSETS = {30, 120, 300, 900};
+    private static final boolean[] DHVK_DUMP_DONE = new boolean[4];
+
+    /** run143: 离屏底片 dump 触发 (带 pass 画没画出来的终极裁决)。 */
+    private static void dhvkMaybeDumpOffscreen() {
+        if (!"1".equals(System.getenv("DHVK_DUMP_OFFSCREEN")) || meshBuiltFrame < 0) {
+            return;
+        }
+        final int rel = frameCounter - meshBuiltFrame;
+        for (int i = 0; i < DHVK_DUMP_OFFSETS.length; i++) {
+            if (!DHVK_DUMP_DONE[i] && rel >= DHVK_DUMP_OFFSETS[i]) {
+                DHVK_DUMP_DONE[i] = true;
+                try {
+                    dhvkDumpOffscreen(frameCounter);
+                } catch (Throwable t) {
+                    LOGGER.error("[dhvk] offscreen dump FAILED: {}", t.toString());
+                }
+            }
+        }
+    }
+
+    private static void dhvkDumpOffscreen(final int frame) throws Exception {
+        final int rel = frame - meshBuiltFrame;
+        final int w = offscreen.width();
+        final int h = offscreen.height();
+        final long colorImg = ((VulkanGpuTexture) offscreen.colorTexture()).vkImage();
+        final long depthImg = ((VulkanGpuTexture) offscreen.depthTexture()).vkImage();
+        final ByteBuffer[] rb = DhVkRawUploader.readback(colorImg, depthImg, w, h);
+        final ByteBuffer color = rb[0];
+        final ByteBuffer depth = rb[1];
+        int nonBlack = 0;
+        int depthHit = 0;
+        final BufferedImage cimg = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        final BufferedImage dimg = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                final int o = (y * w + x) * 4;
+                final int r = color.get(o) & 0xFF;
+                final int g = color.get(o + 1) & 0xFF;
+                final int b = color.get(o + 2) & 0xFF;
+                if ((r | g | b) != 0) {
+                    nonBlack++;
+                }
+                cimg.setRGB(x, y, (r << 16) | (g << 8) | b);
+                final float d = depth.getFloat(o);
+                if (d < 1.0f) {
+                    depthHit++;
+                }
+                dimg.setRGB(x, y, (int) Math.min(255.0, d * 255.0));
+            }
+        }
+        final File cf = new File("run/dhvk-offscreen-color-" + frame + "x" + rel + ".png");
+        final File df = new File("run/dhvk-offscreen-depth-" + frame + "x" + rel + ".png");
+        ImageIO.write(cimg, "png", cf);
+        ImageIO.write(dimg, "png", df);
+        LOGGER.info("[dhvk] OFFSCREEN DUMP frame={} rel={}: 颜色非黑={} / {} px, 深度有效<1={} px "
+                        + "→ {} (君对照: 非黑≈0 且深度≈0 = 带 pass 没画; 非黑多 = 锅在扇/合成)",
+                frame, rel, nonBlack, w * h, depthHit, cf.getPath());
+    }
+
     /** run139: pass 执行节流诊断计数 (FULLLOG 下每 300 帧一条 debug)。 */
     private static long dhvkPassFrames;
 
@@ -807,6 +875,7 @@ public final class FarTerrainRenderer {
                         (System.nanoTime() - b0) / 1000L, meshWaitFrames, meshOx, meshOy, meshOz,
                         meshVertCount, meshIndexCount, meshVbo.length, meshIbo.length);
                 meshWaitFrames = 0;
+                meshBuiltFrame = frameCounter;
             }
         }
         long t0 = System.nanoTime();
