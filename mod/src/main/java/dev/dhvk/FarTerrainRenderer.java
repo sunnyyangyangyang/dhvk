@@ -628,6 +628,8 @@ public final class FarTerrainRenderer {
         // 只移顶点、不动 Y 采样窗 —— run72 定谳: 窗口平移只削掉纸片底段, 顶面仍与草海
         // 共面 → 依旧不可见。生产默认 0。
         int lift = DhVkClient.meshLift();
+        // 目验收调试塔: 抬升模式或 DHVK_TOWER=1 → 钉点纯红 2×2×60 方尖碑 (全向可见)
+        boolean towerOn = lift != 0 || "1".equals(System.getenv("DHVK_TOWER"));
         meshOy = Math.floorDiv((long) surfaceY - 48L, 32) * 32;
         LOGGER.info("[dhvk] s2v2 mesh band Y anchor: surfaceY={} playerY={} -> bandY=[{}, {}] geoLift={} "
                         + "cam=({}, {})",
@@ -662,7 +664,7 @@ public final class FarTerrainRenderer {
         for (BandTile bt : band) {
             totalQuads += bt.quads().size();
         }
-        meshVertCount = 1 + totalQuads * 6;
+        meshVertCount = 1 + totalQuads * 6 + (towerOn ? 30 : 0);
         if (meshVertCount > (1 << 20)) {
             LOGGER.warn("[dhvk] R-c 告警: band verts={} > 1M（堆预算 28MiB 压力，任务1 step 13 销账）",
                     meshVertCount);
@@ -672,7 +674,7 @@ public final class FarTerrainRenderer {
         java.nio.ByteBuffer v = java.nio.ByteBuffer.allocate(16 + totalVerts * 16)
                 .order(ByteOrder.LITTLE_ENDIAN);
         v.put(meshVbo);
-        java.nio.ByteBuffer i = java.nio.ByteBuffer.allocate(4 * (6 + totalQuads * 6))
+        java.nio.ByteBuffer i = java.nio.ByteBuffer.allocate(4 * (6 + totalQuads * 6 + (towerOn ? 30 : 0)))
                 .order(ByteOrder.LITTLE_ENDIAN);
         for (int k = 0; k < 6; k++) {
             i.putInt(0);
@@ -706,6 +708,34 @@ public final class FarTerrainRenderer {
                     i.putInt(vIdx++);
                 }
             }
+        }
+        if (towerOn) {
+            // 面角点序 p0..p3, 顶点发射序与带 quad 同 (0,1,2,0,2,3), 索引续接 vIdx
+            double tx0 = px - 1;
+            double tx1 = px + 1;
+            double tz0 = pz - 1;
+            double tz1 = pz + 1;
+            double yb = surfaceY + lift;
+            double yt = yb + 60;
+            double[][] towerFaces = {
+                    {tx0, yb, tz0, tx1, yb, tz0, tx1, yt, tz0, tx0, yt, tz0},
+                    {tx0, yb, tz1, tx1, yb, tz1, tx1, yt, tz1, tx0, yt, tz1},
+                    {tx0, yb, tz0, tx0, yb, tz1, tx0, yt, tz1, tx0, yt, tz0},
+                    {tx1, yb, tz0, tx1, yb, tz1, tx1, yt, tz1, tx1, yt, tz0},
+                    {tx0, yt, tz0, tx1, yt, tz0, tx1, yt, tz1, tx0, yt, tz1},
+            };
+            int[] seq = {0, 1, 2, 0, 2, 3};
+            for (double[] face : towerFaces) {
+                for (int s : seq) {
+                    v.putFloat((float) face[s * 3]);
+                    v.putFloat((float) face[s * 3 + 1]);
+                    v.putFloat((float) face[s * 3 + 2]);
+                    v.put((byte) 255).put((byte) 0).put((byte) 0).put((byte) 255);
+                    i.putInt(vIdx++);
+                }
+            }
+            LOGGER.info("[dhvk] debug tower at pin ({}, {}): y[{}, {}] 纯红方尖碑 60 块",
+                    (int) px, (int) pz, (int) yb, (int) yt);
         }
         meshVbo = v.array();
         meshIbo = i.array();
