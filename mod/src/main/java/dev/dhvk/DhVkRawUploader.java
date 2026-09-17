@@ -93,11 +93,27 @@ public final class DhVkRawUploader {
      * 专属一次性 CBU 经 vkQueueSubmit2KHR 提交到官方同一 graphics queue 并等 fence
      * ⇒ 调用返回即数据已上卡, 且同队列 FIFO 保证场景读取前就绪。
      */
+    /** vkCmdUpdateBuffer 单次拷贝上限 (VUID-vkCmdUpdateBuffer-dataSize: <= 65536, 且为 4 的倍数)。 */
+    private static final int UPDATE_BUF_MAX = 65536;
+
     public static void upload(final GpuBuffer buffer, final ByteBuffer data) {
         if (!ready) {
             throw new IllegalStateException("[dhvk] raw uploader not ready (device wrapper not captured?)");
         }
         final long vkBuffer = ((VulkanGpuBuffer) buffer).vkBuffer();
+        // run120: 本 LWJGL fork 的 MemoryUtil.memAddress 对 JDK 直接/堆缓冲恒 0 →
+        // 源头一律先拷进 LWJGL 自管缓冲 (带元数据, 地址必真; 其 slice 亦保留地址)。
+        final int size = data.remaining();
+        final ByteBuffer nativeData = MemoryUtil.memAlloc(size);
+        nativeData.put(data);
+        nativeData.flip();
+        // run135: >64KB 走 staging — 分块 updateBuffer 灌临时缓冲, 再 vkCmdCopyBuffer 整块搬。
+        // (run132 VVL 实锤: dataSize=3234848 > 65536 → 带 VBO/IBO 只上了头 64KB, 渲染碎掉)
+        final GpuBuffer staging = size > UPDATE_BUF_MAX
+                ? com.mojang.blaze3d.systems.RenderSystem.getDevice().createBuffer(
+                        () -> "dhvk/stage", GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_COPY_SRC, (long) size)
+                : null;
+        PIN[0] = nativeData;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             final PointerBuffer cbufArr = stack.mallocPointer(1);
             final VkCommandBufferAllocateInfo cai = VkCommandBufferAllocateInfo.calloc(stack)
@@ -111,17 +127,26 @@ public final class DhVkRawUploader {
             try {
                 final VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack).sType$Default();
                 check(VK10.vkBeginCommandBuffer(cbuf, beginInfo), "vkBeginCommandBuffer");
-                // run120: 探针定谳 — 本 LWJGL fork 的 MemoryUtil.memAddress 对 JDK 直接/堆缓冲
-                // 在 JDK25 上恒返回 0 (jdk-direct=0x0, heap=0x0, 唯 memAlloc 有合法地址) →
-                // 4 参 vkCmdUpdateBuffer 绑定按 src=0 下发, 驱动 memmove 空指针 (si_addr=0x10
-                // = 0 + 16B 向量步长)。源头一律先拷进 LWJGL 自管缓冲 (带元数据, 地址必真)。
-                final int size = data.remaining();
-                final ByteBuffer nativeData = MemoryUtil.memAlloc(size);
-                nativeData.put(data);
-                nativeData.flip();
-                PIN[0] = nativeData;
-                VK12.vkCmdUpdateBuffer(cbuf, vkBuffer, 0L, nativeData);
-                PIN[0] = null;
+                if (size <= UPDATE_BUF_MAX) {
+                    VK12.vkCmdUpdateBuffer(cbuf, vkBuffer, 0L, nativeData);
+                } else {
+                    final long stageVk = ((VulkanGpuBuffer) staging).vkBuffer();
+                    long off = 0;
+                    while (off < size) {
+                        final int len = (int) Math.min((long) UPDATE_BUF_MAX, size - off) & ~3;
+                        if (len <= 0) {
+                            break;
+                        }
+                        VK12.vkCmdUpdateBuffer(cbuf, stageVk, off, nativeData.slice((int) off, len));
+                        off += len;
+                    }
+                    // fork 绑定: vkCmdCopyBuffer(cbuf, srcBuffer, srcOffset, VkBufferCopy.Buffer)
+                    // fork 的 VkBufferCopy 无 sType 字段 (仅 srcOffset/dstOffset/size)
+                    final org.lwjgl.vulkan.VkBufferCopy.Buffer bcopy = org.lwjgl.vulkan.VkBufferCopy.calloc(1, stack);
+                    bcopy.dstOffset(0L);
+                    bcopy.size(size & ~3L);
+                    VK10.vkCmdCopyBuffer(cbuf, stageVk, 0L, bcopy);
+                }
                 check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
                 check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
                 final VkQueue queue = new VkQueue(VkHandles.queue, VkHandles.deviceWrapper);
@@ -136,6 +161,11 @@ public final class DhVkRawUploader {
                         "vkWaitForFences");
             } finally {
                 VK10.vkFreeCommandBuffers(VkHandles.deviceWrapper, pool, cbuf);
+            }
+        } finally {
+            PIN[0] = null;
+            if (staging != null) {
+                staging.close();
             }
         }
     }
