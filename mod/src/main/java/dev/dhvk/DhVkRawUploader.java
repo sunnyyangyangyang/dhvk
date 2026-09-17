@@ -141,11 +141,14 @@ public final class DhVkRawUploader {
                         off += len;
                     }
                     // fork 绑定: vkCmdCopyBuffer(cbuf, srcBuffer, srcOffset, VkBufferCopy.Buffer)
-                    // fork 的 VkBufferCopy 无 sType 字段 (仅 srcOffset/dstOffset/size)
+                    // fork 绑定 = vkCmdCopyBuffer(cbuf, srcBuffer, dstBuffer, VkBufferCopy.Buffer):
+                    // 两个 long 是源/目标缓冲句柄, 结构体只携带 srcOffset/dstOffset/size (无 sType)。
+                    // run137: run136 VVL 抓到 dstBuffer=VK_NULL_HANDLE (第三个参数误传 0)。
                     final org.lwjgl.vulkan.VkBufferCopy.Buffer bcopy = org.lwjgl.vulkan.VkBufferCopy.calloc(1, stack);
+                    bcopy.srcOffset(0L);
                     bcopy.dstOffset(0L);
                     bcopy.size(size & ~3L);
-                    VK10.vkCmdCopyBuffer(cbuf, stageVk, 0L, bcopy);
+                    VK10.vkCmdCopyBuffer(cbuf, stageVk, vkBuffer, bcopy);
                 }
                 check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
                 check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
