@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VK12;
@@ -110,8 +111,16 @@ public final class DhVkRawUploader {
             try {
                 final VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack).sType$Default();
                 check(VK10.vkBeginCommandBuffer(cbuf, beginInfo), "vkBeginCommandBuffer");
-                PIN[0] = data;
-                VK12.vkCmdUpdateBuffer(cbuf, vkBuffer, 0L, data);
+                // run120: 探针定谳 — 本 LWJGL fork 的 MemoryUtil.memAddress 对 JDK 直接/堆缓冲
+                // 在 JDK25 上恒返回 0 (jdk-direct=0x0, heap=0x0, 唯 memAlloc 有合法地址) →
+                // 4 参 vkCmdUpdateBuffer 绑定按 src=0 下发, 驱动 memmove 空指针 (si_addr=0x10
+                // = 0 + 16B 向量步长)。源头一律先拷进 LWJGL 自管缓冲 (带元数据, 地址必真)。
+                final int size = data.remaining();
+                final ByteBuffer nativeData = MemoryUtil.memAlloc(size);
+                nativeData.put(data);
+                nativeData.flip();
+                PIN[0] = nativeData;
+                VK12.vkCmdUpdateBuffer(cbuf, vkBuffer, 0L, nativeData);
                 PIN[0] = null;
                 check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
                 check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
