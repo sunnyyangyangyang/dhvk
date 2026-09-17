@@ -17,7 +17,6 @@ import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
 import org.lwjgl.vulkan.VkCommandBufferSubmitInfo;
 import org.lwjgl.vulkan.VkCommandPoolCreateInfo;
 import org.lwjgl.vulkan.VkFenceCreateInfo;
-import org.lwjgl.vulkan.VkImageBlit;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkMemoryAllocateInfo;
@@ -264,18 +263,20 @@ public final class DhVkRawUploader {
                     // fork wrapper 风格: 3 个 int (srcStage/srcAccess/dstStage) + 空缓冲组 null
                     VK10.vkCmdPipelineBarrier(cbuf, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                             0, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, null, null, ib);
-                    final VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
-                    blit.srcSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
-                            .mipLevel(0).layerCount(1));
-                    blit.dstSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
-                            .mipLevel(0).layerCount(1));
-                    blit.srcOffsets(0, off3d(stack, 0, 0, 0));
-                    blit.srcOffsets(1, off3d(stack, w, h, 1));
-                    blit.dstOffsets(0, off3d(stack, 0, 0, 0));
-                    blit.dstOffsets(1, off3d(stack, w, h, 1));
-                    VK10.vkCmdBlitImage(cbuf, img, VK10.VK_IMAGE_LAYOUT_GENERAL,
-                            bufs[k], VK10.VK_IMAGE_LAYOUT_GENERAL, blit,
-                            VK10.VK_FILTER_NEAREST);
+                    // run148: 定谳 — fork 无 vkCmdBlitImageToBuffer, 且 vkCmdBlitImage 的 dst
+                    // 必须是图像 (VVL: dstImage Invalid VkImage) → 图→缓冲走 vkCmdCopyImageToBuffer
+                    // (rowLength/height=0 即紧凑排布, RGBA8 全幅 = w*h*4 字节)
+                    final org.lwjgl.vulkan.VkBufferImageCopy.Buffer copy
+                            = org.lwjgl.vulkan.VkBufferImageCopy.calloc(1, stack)
+                            .bufferOffset(0)
+                            .bufferRowLength(0)
+                            .bufferImageHeight(0)
+                            .imageSubresource(s -> s.aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                                    .mipLevel(0).layerCount(1))
+                            .imageOffset(o -> o.x(0).y(0).z(0))
+                            .imageExtent(e -> e.set(w, h, 1));
+                    VK10.vkCmdCopyImageToBuffer(cbuf, img, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                            bufs[k], copy);
                     check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
                     check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
                     final VkQueue queue = new VkQueue(VkHandles.queue, VkHandles.deviceWrapper);
@@ -314,11 +315,6 @@ public final class DhVkRawUploader {
                 }
             }
         }
-    }
-
-    private static org.lwjgl.vulkan.VkOffset3D off3d(
-            final MemoryStack stack, final int x, final int y, final int z) {
-        return org.lwjgl.vulkan.VkOffset3D.calloc(stack).x(x).y(y).z(z);
     }
 
     private static void check(final int rc, final String op) {

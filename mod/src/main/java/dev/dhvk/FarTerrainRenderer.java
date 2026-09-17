@@ -774,13 +774,23 @@ public final class FarTerrainRenderer {
                 dimg.setRGB(x, y, (int) Math.min(255.0, d * 255.0));
             }
         }
-        final File cf = new File("run/dhvk-offscreen-color-" + frame + "x" + rel + ".png");
-        final File df = new File("run/dhvk-offscreen-depth-" + frame + "x" + rel + ".png");
-        ImageIO.write(cimg, "png", cf);
-        ImageIO.write(dimg, "png", df);
+        final File dir = new File("run");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new IllegalStateException("[dhvk] run/ 目录建不出来: " + dir.getAbsolutePath());
+        }
+        final File cf = new File(dir, "dhvk-offscreen-color-" + frame + "x" + rel + ".png");
+        final File df = new File(dir, "dhvk-offscreen-depth-" + frame + "x" + rel + ".png");
+        // run148: 先落内存流再落盘 — 绕开 AWT FileImageOutputStream 的 "Can't create an
+        // ImageOutputStream!" (相对路径在客户端 CWD 下打不开时 IIOException 直抛)
+        final java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        ImageIO.write(cimg, "png", bos);
+        java.nio.file.Files.write(cf.toPath(), bos.toByteArray());
+        final java.io.ByteArrayOutputStream bos2 = new java.io.ByteArrayOutputStream();
+        ImageIO.write(dimg, "png", bos2);
+        java.nio.file.Files.write(df.toPath(), bos2.toByteArray());
         LOGGER.info("[dhvk] OFFSCREEN DUMP frame={} rel={}: 颜色非黑={} / {} px, 深度有效<1={} px "
                         + "→ {} (君对照: 非黑≈0 且深度≈0 = 带 pass 没画; 非黑多 = 锅在扇/合成)",
-                frame, rel, nonBlack, w * h, depthHit, cf.getPath());
+                frame, rel, nonBlack, w * h, depthHit, cf.getAbsolutePath());
     }
 
     /** run139: pass 执行节流诊断计数 (FULLLOG 下每 300 帧一条 debug)。 */
