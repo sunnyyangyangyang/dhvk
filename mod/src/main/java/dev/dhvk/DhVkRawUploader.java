@@ -55,21 +55,21 @@ public final class DhVkRawUploader {
             if (ready || VkHandles.deviceWrapper == null) {
                 return;
             }
+            // 注意: 栈上分配的 struct 在本 LWJGL fork 里不可 close() (会误走 nmemFree → jemalloc SEGV),
+            // 官方惯用法 = 只开 MemoryStack, 结构体随栈弹出释放。
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 final LongBuffer poolPtr = stack.mallocLong(1);
                 final LongBuffer fencePtr = stack.mallocLong(1);
-                try (VkCommandPoolCreateInfo pci = VkCommandPoolCreateInfo.calloc(stack)
+                final VkCommandPoolCreateInfo pci = VkCommandPoolCreateInfo.calloc(stack)
                         .sType(VK10.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
                         .flags(VK10.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
-                        .queueFamilyIndex(0)) {
-                    check(VK10.vkCreateCommandPool(VkHandles.deviceWrapper, pci, null, poolPtr),
-                            "vkCreateCommandPool");
-                }
+                        .queueFamilyIndex(0);
+                check(VK10.vkCreateCommandPool(VkHandles.deviceWrapper, pci, null, poolPtr),
+                        "vkCreateCommandPool");
                 pool = poolPtr.get(0);
-                try (VkFenceCreateInfo fci = VkFenceCreateInfo.calloc(stack)
-                        .sType(VK10.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)) {
-                    check(VK10.vkCreateFence(VkHandles.deviceWrapper, fci, null, fencePtr), "vkCreateFence");
-                }
+                final VkFenceCreateInfo fci = VkFenceCreateInfo.calloc(stack)
+                        .sType(VK10.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
+                check(VK10.vkCreateFence(VkHandles.deviceWrapper, fci, null, fencePtr), "vkCreateFence");
                 fence = fencePtr.get(0);
                 ready = true;
                 LOGGER.info("[dhvk] raw uploader ready: pool=0x{} fence=0x{} (ring-free upload path)",
@@ -105,10 +105,8 @@ public final class DhVkRawUploader {
             }
             final VkCommandBuffer cbuf = new VkCommandBuffer(cbufArr.get(0), VkHandles.deviceWrapper);
             try {
-                try (VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack)
-                        .sType$Default()) {
-                    check(VK10.vkBeginCommandBuffer(cbuf, beginInfo), "vkBeginCommandBuffer");
-                }
+                final VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack).sType$Default();
+                check(VK10.vkBeginCommandBuffer(cbuf, beginInfo), "vkBeginCommandBuffer");
                 VK12.vkCmdUpdateBuffer(cbuf, vkBuffer, 0L, data);
                 check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
                 check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
