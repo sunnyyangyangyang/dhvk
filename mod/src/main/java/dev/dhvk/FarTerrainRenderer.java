@@ -720,11 +720,18 @@ public final class FarTerrainRenderer {
     private static final boolean[] DHVK_DUMP_DONE = new boolean[4];
 
     /** run143: 离屏底片 dump 触发 (带 pass 画没画出来的终极裁决)。 */
+    private static boolean dhvkDumpStateLogged;
+
     private static void dhvkMaybeDumpOffscreen() {
+        if (!dhvkDumpStateLogged) {
+            dhvkDumpStateLogged = true;
+            LOGGER.debug("[dhvk] dump trigger state: env={} builtFrame={} (passFrames={})",
+                    System.getenv("DHVK_DUMP_OFFSCREEN"), meshBuiltFrame, dhvkPassFrames);
+        }
         if (!"1".equals(System.getenv("DHVK_DUMP_OFFSCREEN")) || meshBuiltFrame < 0) {
             return;
         }
-        final int rel = frameCounter - meshBuiltFrame;
+        final int rel = (int) (dhvkPassFrames - meshBuiltFrame);
         for (int i = 0; i < DHVK_DUMP_OFFSETS.length; i++) {
             if (!DHVK_DUMP_DONE[i] && rel >= DHVK_DUMP_OFFSETS[i]) {
                 DHVK_DUMP_DONE[i] = true;
@@ -875,7 +882,9 @@ public final class FarTerrainRenderer {
                         (System.nanoTime() - b0) / 1000L, meshWaitFrames, meshOx, meshOy, meshOz,
                         meshVertCount, meshIndexCount, meshVbo.length, meshIbo.length);
                 meshWaitFrames = 0;
-                meshBuiltFrame = frameCounter;
+                // run146: 定谳 — 本运行模式 frameCounter 恒 0 (只在旧 render() 路径自增),
+                // 时基改用每帧必增的 dhvkPassFrames
+                meshBuiltFrame = (int) dhvkPassFrames;
             }
         }
         long t0 = System.nanoTime();
