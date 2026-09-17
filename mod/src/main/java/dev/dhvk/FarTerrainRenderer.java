@@ -432,6 +432,32 @@ public final class FarTerrainRenderer {
             // 尺寸未变: 纹理已在; 仍需每帧清屏(本帧重画)
         }
         offscreen.clear(encoder);
+        // 移植态: 自持 DT UBO 缓冲, 绕开官方瞬态 ring (run96 SEGV: ring 帧中多次扩容
+        // C2 持旧引用做 arraycopy 踩飞)。布局逐字节复刻官方 Transform:
+        // ModelViewMat(64) + ColorModulator(16) + ModelOffset(16) + TextureMat(64) = 160B。
+        // writeToBuffer 属 pass 外命令 → 必须在开 pass 前完成 (官方编码器纪律, run98 实证)。
+        if (dtBuffer == null) {
+            dtBuffer = RenderSystem.getDevice().createBuffer(
+                    () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), 160L);
+            dtSlice = dtBuffer.slice();
+        }
+        java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocate(160)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        float[] mv = new float[16];
+        RenderSystem.getModelViewMatrixCopy().get(mv);
+        for (int i = 0; i < 16; i++) {
+            dtb.putFloat(mv[i]);
+        }
+        dtb.putFloat(1.0F).putFloat(1.0F).putFloat(1.0F).putFloat(1.0F);
+        dtb.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
+        dtb.putFloat(0.0F);
+        float[] id = new float[16];
+        DT_IDENTITY.get(id);
+        for (int i = 0; i < 16; i++) {
+            dtb.putFloat(id[i]);
+        }
+        dtb.rewind();
+        encoder.writeToBuffer(dtSlice, dtb);
         try (RenderPass pass = encoder.createRenderPass(
                 () -> "dhvk:far_offscreen",
                 offscreen.colorView(),
@@ -440,32 +466,7 @@ public final class FarTerrainRenderer {
                 java.util.OptionalDouble.of(1.0))) {
             pass.setPipeline(PIPELINE_DH);
             RenderSystem.bindDefaultUniforms(pass);
-            // 移植态: 自持 DT UBO 缓冲, 绕开官方瞬态 ring (run96 SEGV: ring 帧中多次扩容,
-            // C2 持旧引用做 arraycopy 踩飞)。布局逐字节复刻官方 Transform:
-            // ModelViewMat(64) + ColorModulator(16) + ModelOffset(16) + TextureMat(64) = 160B
-            if (dtBuffer == null) {
-                dtBuffer = RenderSystem.getDevice().createBuffer(
-                        () -> "dhvk/dt_ubo", GpuBuffer.USAGE_UNIFORM | bda(), 160L);
-                dtSlice = dtBuffer.slice();
-            }
-            // 全部走 JDK putFloat 路径 (run97 SEGV: joml MemUtilUnsafe.put 直接地址写踩飞)
-            java.nio.ByteBuffer dtb = java.nio.ByteBuffer.allocate(160)
-                    .order(java.nio.ByteOrder.LITTLE_ENDIAN);
-            float[] mv = new float[16];
-            RenderSystem.getModelViewMatrixCopy().get(mv);
-            for (int i = 0; i < 16; i++) {
-                dtb.putFloat(mv[i]);
-            }
-            dtb.putFloat(1.0F).putFloat(1.0F).putFloat(1.0F).putFloat(1.0F);
-            dtb.putFloat(0.0F).putFloat(0.0F).putFloat(0.0F);
-            dtb.putFloat(0.0F);
-            float[] id = new float[16];
-            DT_IDENTITY.get(id);
-            for (int i = 0; i < 16; i++) {
-                dtb.putFloat(id[i]);
-            }
-            dtb.rewind();
-            encoder.writeToBuffer(dtSlice, dtb);
+            // DT 内容已在本 pass 开台前 writeToBuffer 上传 (JDK putFloat 路径, run97 实证)
             pass.setUniform("DynamicTransforms", dtSlice);
             pass.setVertexBuffer(0, meshVboBuffer.slice());
             pass.setIndexBuffer(meshIboBuffer, (!SYNTH_RING) ? IndexType.INT : IndexType.SHORT);
