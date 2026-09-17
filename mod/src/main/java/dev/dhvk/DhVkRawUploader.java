@@ -42,6 +42,10 @@ public final class DhVkRawUploader {
     private static long pool;
     private static long fence;
     private static volatile boolean ready;
+    // run119: C2 liveness 钉子 — 直接缓冲的 native 内存只能靠 Java 对象强引用钉住;
+    // C2 判定参数在 JNI 调用后已死 → 调用中途 GC → Cleaner 释放 native 内存 → 驱动
+    // memmove 悬空指针 SEGV (run118: __memmove_avx512, si_addr=0x10, RDX=64=扇VBO大小)。
+    private static final Object[] PIN = new Object[1];
 
     private DhVkRawUploader() {
     }
@@ -106,7 +110,9 @@ public final class DhVkRawUploader {
             try {
                 final VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack).sType$Default();
                 check(VK10.vkBeginCommandBuffer(cbuf, beginInfo), "vkBeginCommandBuffer");
+                PIN[0] = data;
                 VK12.vkCmdUpdateBuffer(cbuf, vkBuffer, 0L, data);
+                PIN[0] = null;
                 check(VK10.vkEndCommandBuffer(cbuf), "vkEndCommandBuffer");
                 check(VK10.vkResetFences(VkHandles.deviceWrapper, fence), "vkResetFences");
                 final VkQueue queue = new VkQueue(VkHandles.queue, VkHandles.deviceWrapper);
